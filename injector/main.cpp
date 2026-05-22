@@ -48,6 +48,8 @@ struct LaunchOptions
     uint16_t m_relayPort = 0;
     bool m_showHelp = false;
     bool m_noPrompt = false;  // Skip SOCKS5 dialog if true
+    bool m_packetLog = false;
+    bool m_killSwitch = true;
 };
 
 // Forward declarations for dialog function
@@ -62,6 +64,8 @@ struct Socks5DialogData
     char password[128] = "";
     bool useAuth = false;
     bool confirmed = false;
+    bool packetLog = false;
+    bool killSwitch = true;
 };
 
 enum class Socks5PromptResult
@@ -211,6 +215,8 @@ static Socks5PromptResult ShowSocks5ConfigDialog(LaunchOptions* options)
             if (std::getline(file, line)) strncpy_s(data.port, line.c_str(), sizeof(data.port) - 1);
             if (std::getline(file, line)) data.useAuth = (line == "1");
             if (std::getline(file, line)) strncpy_s(data.username, line.c_str(), sizeof(data.username) - 1);
+            if (std::getline(file, line)) data.packetLog = (line == "1");
+            if (std::getline(file, line)) data.killSwitch = (line != "0");
         }
     }
 
@@ -259,8 +265,22 @@ static Socks5PromptResult ShowSocks5ConfigDialog(LaunchOptions* options)
         }
     }
 
+    int packetLog = MessageBoxA(nullptr,
+        "Enable packet logging?\n\nThis writes outbound client TCP chunks to relay_packets.log.\nLeave this OFF unless you are debugging.",
+        "SOCKS5 Packet Logging",
+        MB_YESNO | MB_ICONQUESTION | MB_TOPMOST);
+    data.packetLog = (packetLog == IDYES);
+
+    int killSwitch = MessageBoxA(nullptr,
+        "Enable kill-switch?\n\nIf the proxied game connection closes while the game is still running, the injector will terminate the game process.",
+        "SOCKS5 Kill-Switch",
+        MB_YESNO | MB_ICONQUESTION | MB_TOPMOST);
+    data.killSwitch = (killSwitch == IDYES);
+
     // Populate options
     options->m_proxy = proxy;
+    options->m_packetLog = data.packetLog;
+    options->m_killSwitch = data.killSwitch;
     if (data.useAuth) {
         options->m_proxyUser = data.username;
         options->m_proxyPassword = data.password;
@@ -274,6 +294,8 @@ static Socks5PromptResult ShowSocks5ConfigDialog(LaunchOptions* options)
         saveFile << data.port << "\n";
         saveFile << (data.useAuth ? "1" : "0") << "\n";
         saveFile << data.username << "\n";
+        saveFile << (data.packetLog ? "1" : "0") << "\n";
+        saveFile << (data.killSwitch ? "1" : "0") << "\n";
     }
 
     // Confirmation message
@@ -281,10 +303,14 @@ static Socks5PromptResult ShowSocks5ConfigDialog(LaunchOptions* options)
     snprintf(confirmMsg, sizeof(confirmMsg),
         "SOCKS5 proxy configured:\n\n"
         "Proxy: %s:%s\n"
-        "Auth: %s\n\n"
+        "Auth: %s\n"
+        "Packet logging: %s\n"
+        "Kill-switch: %s\n\n"
         "Game traffic will be routed through this proxy while the relay is active.",
         data.host, data.port,
-        data.useAuth ? "Yes (username set)" : "No");
+        data.useAuth ? "Yes (username set)" : "No",
+        data.packetLog ? "Enabled" : "Disabled",
+        data.killSwitch ? "Enabled" : "Disabled");
     MessageBoxA(nullptr, confirmMsg, "SOCKS5 Proxy Ready", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
 
     return Socks5PromptResult::Configured;
@@ -310,7 +336,7 @@ static void PrintUsage()
     printf("Usage:\n");
     printf("  injector.exe\n");
     printf("  injector.exe --proxy <host:port> [--proxy-user <user>] [--proxy-pass <pass>]\n");
-    printf("              [--relay-port <port>] [--target <host:port>]\n");
+    printf("              [--relay-port <port>] [--target <host:port>] [--packet-log] [--no-kill-switch]\n");
     printf("  injector.exe --no-prompt\n\n");
     printf("Examples:\n");
     printf("  injector.exe                                    (shows SOCKS5 setup dialog)\n");
@@ -324,6 +350,8 @@ static void PrintUsage()
     printf("  --relay-port <port>     Local relay port (default: same as target port)\n");
     printf("  --target <host:port>    Override game server endpoint\n");
     printf("  --no-prompt             Skip SOCKS5 setup dialog, run without proxy\n\n");
+    printf("  --packet-log            Log outbound client TCP chunks to relay_packets.log\n");
+    printf("  --no-kill-switch        Do not terminate game when the proxied connection closes\n\n");
     printf("Notes:\n");
     printf("  - Running without --proxy shows a GUI dialog asking if you want SOCKS5.\n");
     printf("  - Proxy host, port, and username are saved to socks5_config.txt; password is not saved.\n");
@@ -331,7 +359,7 @@ static void PrintUsage()
            SERVER_CONFIG_NAME, LOCAL_RELAY_HOST);
     printf("  - The injector stays open in proxy mode to keep the local relay alive and restores %s on exit.\n",
            SERVER_CONFIG_NAME);
-    printf("  - Proxy mode logs outbound client TCP chunks to %s next to injector.exe.\n", RELAY_LOG_NAME);
+    printf("  - Packet logging is off by default and only enabled with --packet-log or the prompt.\n");
     printf("  - Without --proxy, the injector will show a setup dialog or connect directly.\n");
 }
 
@@ -448,6 +476,10 @@ static bool ParseArgs(int argc, char** argv, LaunchOptions* options)
             ++i;
         } else if (arg == "--no-prompt") {
             options->m_noPrompt = true;
+        } else if (arg == "--packet-log") {
+            options->m_packetLog = true;
+        } else if (arg == "--no-kill-switch") {
+            options->m_killSwitch = false;
         } else {
             printf("[!] Unknown argument: %s\n", arg.c_str());
             return false;
@@ -455,8 +487,9 @@ static bool ParseArgs(int argc, char** argv, LaunchOptions* options)
     }
 
     if (!options->m_proxy && (!options->m_proxyUser.empty() || !options->m_proxyPassword.empty() ||
-                              options->m_relayPort != 0 || options->m_targetOverride.has_value())) {
-        printf("[!] --proxy-user, --proxy-pass, --relay-port, and --target require --proxy.\n");
+                              options->m_relayPort != 0 || options->m_targetOverride.has_value() ||
+                              options->m_packetLog || !options->m_killSwitch)) {
+        printf("[!] --proxy-user, --proxy-pass, --relay-port, --target, --packet-log, and --no-kill-switch require --proxy.\n");
         return false;
     }
 
@@ -998,6 +1031,27 @@ static bool PerformSocks5Handshake(SOCKET proxySocket, const Endpoint& target,
     return true;
 }
 
+static bool TestSocks5Proxy(const Endpoint& proxy, const Endpoint& target,
+                            const std::string& username, const std::string& password)
+{
+    printf("[proxy] Testing SOCKS5 tunnel: %s -> %s\n",
+           EndpointToString(proxy).c_str(), EndpointToString(target).c_str());
+
+    SOCKET testSocket = INVALID_SOCKET;
+    if (!ConnectTcp(proxy, &testSocket))
+        return false;
+
+    bool ok = PerformSocks5Handshake(testSocket, target, username, password);
+    closesocket(testSocket);
+
+    if (ok)
+        printf("[proxy] SOCKS5 pre-launch test succeeded.\n");
+    else
+        printf("[proxy] SOCKS5 pre-launch test failed.\n");
+
+    return ok;
+}
+
 class Socks5Relay
 {
 public:
@@ -1133,8 +1187,20 @@ public:
     }
 
     uint16_t GetListenPort() const { return m_listen.port; }
+    bool IsFailClosedTriggered() const { return m_failClosedTriggered.load(); }
 
 private:
+    void TriggerFailClosed(uint64_t connectionId, const char* reason)
+    {
+        if (!m_running)
+            return;
+
+        m_failClosedTriggered.store(true);
+        printf("[proxy] KILL-SWITCH: %s\n", reason);
+        if (m_logger)
+            m_logger->LogEvent(connectionId, std::string("KILL-SWITCH: ") + reason);
+    }
+
     void AcceptLoop()
     {
         while (m_running) {
@@ -1213,6 +1279,7 @@ private:
         if (!ConnectTcp(m_proxy, &upstreamSocket)) {
             if (m_logger)
                 m_logger->LogEvent(connectionId, "Failed to connect to SOCKS5 proxy");
+            TriggerFailClosed(connectionId, "Failed to connect to SOCKS5 proxy");
             CloseManagedSocket(client);
             UnregisterSocket(client);
             return;
@@ -1224,6 +1291,7 @@ private:
         if (!PerformSocks5Handshake(upstreamSocket, m_target, m_proxyUser, m_proxyPassword)) {
             if (m_logger)
                 m_logger->LogEvent(connectionId, "SOCKS5 handshake failed");
+            TriggerFailClosed(connectionId, "SOCKS5 handshake failed");
             CloseManagedSocket(client);
             CloseManagedSocket(upstream);
             UnregisterSocket(client);
@@ -1233,6 +1301,7 @@ private:
 
         if (m_logger)
             m_logger->LogEvent(connectionId, "SOCKS5 tunnel established");
+        m_establishedTunnel.store(true);
 
         std::thread forward(PumpTraffic, client, upstream, m_logger, connectionId, "client->target");
         std::thread backward(PumpTraffic, upstream, client, nullptr, connectionId, "target->client");
@@ -1242,6 +1311,8 @@ private:
 
         if (m_logger)
             m_logger->LogEvent(connectionId, "Connection closed");
+        if (m_establishedTunnel.load())
+            TriggerFailClosed(connectionId, "Proxied game connection closed");
 
         CloseManagedSocket(client);
         CloseManagedSocket(upstream);
@@ -1257,6 +1328,8 @@ private:
 
     SOCKET m_listenSocket = INVALID_SOCKET;
     std::atomic<bool> m_running{false};
+    std::atomic<bool> m_establishedTunnel{false};
+    std::atomic<bool> m_failClosedTriggered{false};
     std::atomic<uint64_t> m_nextConnectionId{0};
     std::thread m_acceptThread;
     RelayLogger* m_logger = nullptr;
@@ -1420,6 +1493,7 @@ int main(int argc, char** argv)
     ServerConfigPatch serverPatch(fs::path(GAME_DIR) / SERVER_CONFIG_NAME);
     Socks5Relay relay;
     RelayLogger relayLogger;
+    RelayLogger* activeLogger = nullptr;
     RuntimeContext runtimeContext;
 
     if (!SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE))
@@ -1431,22 +1505,41 @@ int main(int argc, char** argv)
             return 1;
         }
 
-        fs::path logPath = fs::path(exePath).parent_path() / RELAY_LOG_NAME;
-        if (!relayLogger.Start(logPath)) {
-            printf("[!] Failed to open relay log: %s\n", logPath.string().c_str());
-            system("pause");
-            return 1;
+        if (options.m_packetLog) {
+            fs::path logPath = fs::path(exePath).parent_path() / RELAY_LOG_NAME;
+            if (!relayLogger.Start(logPath)) {
+                printf("[!] Failed to open relay log: %s\n", logPath.string().c_str());
+                system("pause");
+                return 1;
+            }
+            activeLogger = &relayLogger;
         }
 
         if (!serverPatch.Load()) {
-            relayLogger.Stop();
+            if (activeLogger)
+                relayLogger.Stop();
             system("pause");
             return 1;
         }
 
         std::optional<Endpoint> target = SelectTargetEndpoint(serverPatch, options);
         if (!target) {
-            relayLogger.Stop();
+            if (activeLogger)
+                relayLogger.Stop();
+            system("pause");
+            return 1;
+        }
+
+        printf("[proxy] ================= PROXY MODE ACTIVE =================\n");
+        printf("[proxy] SOCKS5 proxy: %s\n", EndpointToString(*options.m_proxy).c_str());
+        printf("[proxy] Target server: %s\n", EndpointToString(*target).c_str());
+        printf("[proxy] Packet logging: %s\n", options.m_packetLog ? "ON" : "OFF");
+        printf("[proxy] Kill-switch: %s\n", options.m_killSwitch ? "ON" : "OFF");
+
+        if (!TestSocks5Proxy(*options.m_proxy, *target, options.m_proxyUser, options.m_proxyPassword)) {
+            printf("[!] SOCKS5 pre-launch test failed. Game will not be launched.\n");
+            if (activeLogger)
+                relayLogger.Stop();
             system("pause");
             return 1;
         }
@@ -1454,27 +1547,30 @@ int main(int argc, char** argv)
         Endpoint listen{LOCAL_RELAY_HOST, options.m_relayPort != 0 ? options.m_relayPort : target->port};
 
         if (!relay.Start(listen, *options.m_proxy, *target,
-                         options.m_proxyUser, options.m_proxyPassword, &relayLogger)) {
-            relayLogger.Stop();
+                         options.m_proxyUser, options.m_proxyPassword, activeLogger)) {
+            if (activeLogger)
+                relayLogger.Stop();
             system("pause");
             return 1;
         }
 
         if (!serverPatch.Apply(listen.host, relay.GetListenPort())) {
             relay.Stop();
-            relayLogger.Stop();
+            if (activeLogger)
+                relayLogger.Stop();
             system("pause");
             return 1;
         }
 
         runtimeContext.m_patch = &serverPatch;
         runtimeContext.m_relay = &relay;
-        runtimeContext.m_logger = &relayLogger;
+        runtimeContext.m_logger = activeLogger;
         g_runtimeContext = &runtimeContext;
 
         printf("[proxy] Patched %s to %s:%d\n", SERVER_CONFIG_NAME, listen.host.c_str(), relay.GetListenPort());
         printf("[proxy] Upstream target: %s\n", EndpointToString(*target).c_str());
-        printf("[proxy] Logging outbound client TCP chunks to %s\n", relayLogger.Path().string().c_str());
+        if (activeLogger)
+            printf("[proxy] Logging outbound client TCP chunks to %s\n", relayLogger.Path().string().c_str());
     }
 
     printf("[*] Launching fresh %s process...\n", GAME_EXE);
@@ -1489,7 +1585,8 @@ int main(int argc, char** argv)
         if (proxyMode) {
             relay.Stop();
             serverPatch.Restore();
-            relayLogger.Stop();
+            if (activeLogger)
+                relayLogger.Stop();
         }
         system("pause");
         return 1;
@@ -1528,10 +1625,22 @@ int main(int argc, char** argv)
         printf("[+] %s restored. You can launch another instance now.\n", SERVER_CONFIG_NAME);
 
         printf("[*] Waiting for the game process to exit...\n");
-        WaitForSingleObject(pi.hProcess, INFINITE);
+        for (;;) {
+            DWORD wait = WaitForSingleObject(pi.hProcess, 1000);
+            if (wait == WAIT_OBJECT_0)
+                break;
+
+            if (options.m_killSwitch && relay.IsFailClosedTriggered()) {
+                printf("[proxy] KILL-SWITCH: terminating game process to avoid continuing after proxy failure.\n");
+                TerminateProcess(pi.hProcess, 1);
+                WaitForSingleObject(pi.hProcess, 10000);
+                break;
+            }
+        }
 
         relay.Stop();
-        relayLogger.Stop();
+        if (activeLogger)
+            relayLogger.Stop();
         g_runtimeContext = nullptr;
     }
 
