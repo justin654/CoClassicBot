@@ -285,7 +285,6 @@ static Socks5PromptResult ShowSocks5ConfigDialog(LaunchOptions* options)
         options->m_proxyUser = data.username;
         options->m_proxyPassword = data.password;
     }
-    data.confirmed = true;
 
     // Save settings for next time
     std::ofstream saveFile(savePath);
@@ -1041,6 +1040,12 @@ static bool TestSocks5Proxy(const Endpoint& proxy, const Endpoint& target,
     if (!ConnectTcp(proxy, &testSocket))
         return false;
 
+    DWORD ioTimeoutMs = 10000;
+    setsockopt(testSocket, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&ioTimeoutMs), sizeof(ioTimeoutMs));
+    setsockopt(testSocket, SOL_SOCKET, SO_SNDTIMEO,
+               reinterpret_cast<const char*>(&ioTimeoutMs), sizeof(ioTimeoutMs));
+
     bool ok = PerformSocks5Handshake(testSocket, target, username, password);
     closesocket(testSocket);
 
@@ -1064,6 +1069,14 @@ public:
         m_proxyUser = std::move(proxyUser);
         m_proxyPassword = std::move(proxyPassword);
         m_logger = logger;
+
+        if (!m_failClosedEvent) {
+            m_failClosedEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+            if (!m_failClosedEvent) {
+                printf("[proxy] Failed to create kill-switch event (0x%08lX)\n", GetLastError());
+                return false;
+            }
+        }
 
         m_listenSocket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (m_listenSocket == INVALID_SOCKET) {
@@ -1184,10 +1197,15 @@ public:
     ~Socks5Relay()
     {
         Stop();
+        if (m_failClosedEvent) {
+            CloseHandle(m_failClosedEvent);
+            m_failClosedEvent = nullptr;
+        }
     }
 
     uint16_t GetListenPort() const { return m_listen.port; }
     bool IsFailClosedTriggered() const { return m_failClosedTriggered.load(); }
+    HANDLE GetFailClosedEvent() const { return m_failClosedEvent; }
 
 private:
     void TriggerFailClosed(uint64_t connectionId, const char* reason)
@@ -1195,10 +1213,12 @@ private:
         if (!m_running)
             return;
 
-        m_failClosedTriggered.store(true);
+        bool wasAlreadyTriggered = m_failClosedTriggered.exchange(true);
         printf("[proxy] KILL-SWITCH: %s\n", reason);
         if (m_logger)
             m_logger->LogEvent(connectionId, std::string("KILL-SWITCH: ") + reason);
+        if (!wasAlreadyTriggered && m_failClosedEvent)
+            SetEvent(m_failClosedEvent);
     }
 
     void AcceptLoop()
@@ -1333,6 +1353,7 @@ private:
     std::atomic<uint64_t> m_nextConnectionId{0};
     std::thread m_acceptThread;
     RelayLogger* m_logger = nullptr;
+    HANDLE m_failClosedEvent = nullptr;
 
     std::mutex m_stateMutex;
     std::vector<ManagedSocketPtr> m_activeSockets;
@@ -1625,17 +1646,16 @@ int main(int argc, char** argv)
         printf("[+] %s restored. You can launch another instance now.\n", SERVER_CONFIG_NAME);
 
         printf("[*] Waiting for the game process to exit...\n");
-        for (;;) {
-            DWORD wait = WaitForSingleObject(pi.hProcess, 1000);
-            if (wait == WAIT_OBJECT_0)
-                break;
-
-            if (options.m_killSwitch && relay.IsFailClosedTriggered()) {
+        if (options.m_killSwitch && relay.GetFailClosedEvent()) {
+            HANDLE waitHandles[2] = { pi.hProcess, relay.GetFailClosedEvent() };
+            DWORD wait = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
+            if (wait == WAIT_OBJECT_0 + 1) {
                 printf("[proxy] KILL-SWITCH: terminating game process to avoid continuing after proxy failure.\n");
                 TerminateProcess(pi.hProcess, 1);
                 WaitForSingleObject(pi.hProcess, 10000);
-                break;
             }
+        } else {
+            WaitForSingleObject(pi.hProcess, INFINITE);
         }
 
         relay.Stop();

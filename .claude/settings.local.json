@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:\\\\Users\\\\Justin\\\\CoClassicBot\" log --oneline -n 20)",
+      "Bash(git -C \"c:\\\\Users\\\\Justin\\\\CoClassicBot\" show --stat 771fb41)"
+    ]
+  }
+}
