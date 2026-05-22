@@ -3,6 +3,8 @@
 #include "hooks.h"
 #include "CHero.h"
 #include "CGameMap.h"
+#include "CItem.h"
+#include "itemtype.h"
 #include "pathfinder.h"
 #include "log.h"
 #include <algorithm>
@@ -107,6 +109,18 @@ std::shared_ptr<CMapItem> HuntLootManager::FindBestLoot(
         if (seenAge < spawnGraceMs) { ++skippedSpawnGrace; continue; }
         if (isLootPickupIgnoredFn && isLootPickupIgnoredFn(itemRef->m_id, now)) { ++skippedIgnored; continue; }
         if (isPointInZoneFn && !isPointInZoneFn(map->GetId(), itemRef->m_pos)) { ++skippedZone; continue; }
+
+        // Phase 2a: gold-value floor.  Universal pickup filter — applies even
+        // to confirmed drops.  Items explicitly listed in lootItemIds bypass
+        // the floor (user-curated whitelist always wins).
+        if (settings.minimumLootGoldValue > 0
+            && !HuntTownService::IsSelectedLootItem(settings, itemRef->m_idType)) {
+            const ItemTypeInfo* info = GetItemTypeInfo(itemRef->m_idType);
+            if (info && info->price < (uint32_t)settings.minimumLootGoldValue) {
+                ++skippedFilter;
+                continue;
+            }
+        }
 
         // Confirmed drops (our kill via system message) are always looted.
         // Other items must pass the item filter (loot list, quality, or plus).
@@ -275,3 +289,85 @@ bool HuntLootManager::TryPickupLootItem(CHero* hero, const AutoHuntSettings& set
     return true;
 }
 
+// =============================================================================
+// Phase 2a: bag-full trash drop
+// =============================================================================
+
+bool HuntLootManager::IsBagItemTrash(const AutoHuntSettings& settings, const CItem& item)
+{
+    const uint32_t typeId = item.GetTypeID();
+
+    // ── Hard safety filters: never drop these ─────────────────────────────────
+    // 1) Anything in any user-curated keep list.
+    if (HuntTownService::IsSelectedLootItem(settings, typeId))           return false;
+    if (HuntTownService::IsSelectedWarehouseItem(settings, typeId))      return false;
+    if (HuntTownService::IsSelectedPriorityReturnItem(settings, typeId)) return false;
+    // 2) Equipment is never auto-dropped from the bag.
+    if (item.IsEquipment())                                              return false;
+    // 3) Anything plussed (+1 or higher) — these are valuable upgrades.
+    if (item.GetPlus() > 0)                                              return false;
+    // 4) Don't drop arrows the archer plugin maintains.
+    if (settings.arrowTypeId != 0 && typeId == settings.arrowTypeId)     return false;
+
+    // ── Now apply the user's trash criteria (OR-of-thresholds) ───────────────
+    bool flagged = false;
+    if (settings.autoDropMinKeepQuality > 0) {
+        const int quality = (int)(typeId % 10);
+        if (quality < settings.autoDropMinKeepQuality)
+            flagged = true;
+    }
+    if (!flagged && settings.autoDropMinKeepPrice > 0) {
+        if (const ItemTypeInfo* info = GetItemTypeInfo(typeId)) {
+            if (info->price < (uint32_t)settings.autoDropMinKeepPrice)
+                flagged = true;
+        }
+    }
+    return flagged;
+}
+
+bool HuntLootManager::TryDropTrashItem(CHero* hero, const AutoHuntSettings& settings, DWORD now)
+{
+    if (!hero) return false;
+    if (!settings.autoDropTrashWhenFull) return false;
+    // Both criteria off → nothing to do.
+    if (settings.autoDropMinKeepQuality <= 0 && settings.autoDropMinKeepPrice <= 0)
+        return false;
+
+    // Only fire when the bag is at/over the user's storage threshold.
+    const int bagThreshold = std::clamp(settings.bagStoreThreshold, 1, CHero::MAX_BAG_ITEMS);
+    if ((int)hero->m_deqItem.size() < bagThreshold)
+        return false;
+
+    // Throttle: re-use itemActionIntervalMs so we don't spam drop packets.
+    const DWORD interval = GetItemActionIntervalMs(settings);
+    if ((now - m_lastTrashDropTick) < interval)
+        return false;
+
+    // Pick the lowest-quality trash item (deterministic; avoids sticky loops).
+    CItem* victim = nullptr;
+    int    victimScore = 0;
+    for (const auto& itemRef : hero->m_deqItem) {
+        if (!itemRef) continue;
+        if (!IsBagItemTrash(settings, *itemRef)) continue;
+        // Lower quality first, then lower price (rough proxy for worst-first).
+        const uint32_t typeId = itemRef->GetTypeID();
+        const int      qualityScore = (int)(typeId % 10) * 1000000;
+        const ItemTypeInfo* info = GetItemTypeInfo(typeId);
+        const int      priceScore = info ? (int)std::min<uint32_t>(info->price, 999999u) : 999999;
+        const int      score = qualityScore + priceScore;
+        if (!victim || score < victimScore) {
+            victim = itemRef.get();
+            victimScore = score;
+        }
+    }
+    if (!victim) return false;
+
+    hero->DropItem(victim->GetID(), hero->m_posMap);
+    m_lastTrashDropTick   = now;
+    m_lastTrashDropItemId = victim->GetID();
+    spdlog::info("[hunt-loot] DropTrash id={} type={} name='{}' quality={} plus={} bag={}/{}",
+        victim->GetID(), victim->GetTypeID(), victim->GetName(),
+        victim->GetQuality(), victim->GetPlus(),
+        (int)hero->m_deqItem.size(), CHero::MAX_BAG_ITEMS);
+    return true;
+}

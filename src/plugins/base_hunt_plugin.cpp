@@ -16,6 +16,7 @@
 #include "CRole.h"
 #include "config.h"
 #include "discord.h"
+#include "hunt_stats.h"
 #include "itemtype.h"
 #include "pathfinder.h"
 #include "log.h"
@@ -983,6 +984,11 @@ bool BaseHuntPlugin::FindClosestZoneTile(CGameMap* map, const AutoHuntSettings& 
 
 void BaseHuntPlugin::Update()
 {
+    // Always tick session stats so the panel stays live regardless of m_enabled.
+    // The tracker internally checks whether any hunt plugin is enabled before
+    // attributing kills / drops / gold so we don't double-count between subclasses.
+    HuntStats::Update();
+
     AutoHuntSettings& settings = GetAutoHuntSettings();
     TravelPlugin* travel = PluginManager::Get().GetPlugin<TravelPlugin>();
 
@@ -1173,6 +1179,15 @@ void BaseHuntPlugin::Update()
 
     if (travel && travel->IsTraveling()) {
         SetState(AutoHuntState::Ready, "Waiting for travel plugin");
+        return;
+    }
+
+    // ── Phase 2a: bag-full trash drop ───────────────────────────────────
+    // Drops one junk item per throttled tick when bag is at threshold so
+    // there's room for incoming loot.  No-op unless the user enabled it
+    // and configured at least one cutoff (quality or price).
+    if (m_lootMgr.TryDropTrashItem(hero, settings, GetTickCount())) {
+        SetState(AutoHuntState::Recover, "Dropping bag trash to make room");
         return;
     }
 
@@ -1499,6 +1514,9 @@ void BaseHuntPlugin::RenderGeneralUI()
     AutoHuntSettings& settings = GetAutoHuntSettings();
     constexpr ImGuiTreeNodeFlags kSectionFlags = ImGuiTreeNodeFlags_DefaultOpen;
 
+    // Session telemetry panel (kills / gold / drops / deaths + Discord toggles)
+    HuntStats::RenderUI();
+
     if (ImGui::CollapsingHeader("General", kSectionFlags)) {
         ImGui::Checkbox("Use Potions", &settings.usePotions);
         ImGui::Checkbox("Auto Repair", &settings.autoRepair);
@@ -1775,6 +1793,41 @@ void BaseHuntPlugin::RenderSettingsUI()
         ImGui::Checkbox("Super##basehuntlootqualitysuper", &settings.lootSuper);
         ImGui::TextDisabled("Auto hunt loots items selected in the browser, checked qualities, or items meeting Minimum Loot Plus.");
         ImGui::TextDisabled("Pickup packets wait until the hero is settled on the loot tile to avoid range errors.");
+
+        // ── Phase 2a: gold-value floor ─────────────────────────────────────
+        ImGui::Separator();
+        ImGui::InputInt("Min Loot Gold Value", &settings.minimumLootGoldValue, 100, 1000);
+        if (settings.minimumLootGoldValue < 0) settings.minimumLootGoldValue = 0;
+        ImGui::TextDisabled("Skip ground items whose sell price is below this value (0 = disabled).");
+        ImGui::TextDisabled("Items in the Loot list bypass this floor.");
+
+        // ── Phase 2a: bag-full trash drop ──────────────────────────────────
+        ImGui::Separator();
+        ImGui::Checkbox("Auto-drop trash when bag is full", &settings.autoDropTrashWhenFull);
+        if (settings.autoDropTrashWhenFull) {
+            ImGui::Indent();
+            ImGui::SliderInt("Drop if quality < ##autoDropQ", &settings.autoDropMinKeepQuality, 0, 9);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(0=off; 3=Normal, 6=Refined)");
+            ImGui::InputInt("Drop if price < ##autoDropP", &settings.autoDropMinKeepPrice, 100, 1000);
+            if (settings.autoDropMinKeepPrice < 0) settings.autoDropMinKeepPrice = 0;
+            ImGui::TextDisabled("Triggers only when bag size >= 'Store When Bag >=' threshold.");
+            ImGui::TextDisabled("Never drops: equipment, plussed items, arrows, or anything in your Loot/Warehouse/Priority lists.");
+
+            // Live count of bag items currently flagged as trash
+            CHero* heroForCount = Game::GetHero();
+            int trashInBag = 0;
+            if (heroForCount) {
+                for (const auto& itemRef : heroForCount->m_deqItem) {
+                    if (itemRef && HuntLootManager::IsBagItemTrash(settings, *itemRef))
+                        ++trashInBag;
+                }
+            }
+            ImGui::Text("Currently flagged as trash: %d / %d in bag",
+                trashInBag,
+                heroForCount ? (int)heroForCount->m_deqItem.size() : 0);
+            ImGui::Unindent();
+        }
     }
 
     if (ImGui::CollapsingHeader("Warehouse Rules", kSectionFlags)) {
@@ -1868,6 +1921,9 @@ void BaseHuntPlugin::RenderUI()
                 other->StopAutomation(true);
             }
         }
+        // Optional: reset session telemetry on each fresh enable.
+        if (HuntStats::GetSettings().autoResetOnEnable)
+            HuntStats::Reset();
     }
     ImGui::Separator();
 

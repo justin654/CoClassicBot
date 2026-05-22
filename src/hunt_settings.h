@@ -126,6 +126,19 @@ struct AutoHuntSettings
     int reviveRetryIntervalMs = 1000;
     int minimumLootPlus = 0;
     int minimumStorePlus = 0;
+    // ── Phase 2a: gold-value floor for ground-item pickup ─────────────────
+    // 0 disables; otherwise items whose ItemTypeInfo::price is below this
+    // value are skipped on pickup unless explicitly listed in lootItemIds.
+    int minimumLootGoldValue = 0;
+    // ── Phase 2a: bag-full trash drop ────────────────────────────────────
+    // When enabled and bag size >= bagStoreThreshold, the loot manager will
+    // drop bagged items that meet either the quality cutoff or price cutoff
+    // below.  Strict safety filters apply (never drops equipment, plussed
+    // items, arrows, or anything appearing in lootItemIds / warehouseItemIds
+    // / priorityReturnItemIds).
+    bool autoDropTrashWhenFull = false;
+    int  autoDropMinKeepQuality = 0;   // 0 disables — drop items with quality strictly less than N
+    int  autoDropMinKeepPrice   = 0;   // 0 disables — drop items with ItemTypeInfo::price strictly less than N
     int silverKeepAmount = 0;
     uint32_t arrowTypeId = 1050002; // SpeedArrow
     int arrowBuyCount = 3;

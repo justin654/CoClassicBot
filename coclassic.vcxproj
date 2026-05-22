@@ -67,6 +67,8 @@
   <ItemGroup>
     <ClCompile Include="src\log.cpp" />
     <ClCompile Include="src\dllmain.cpp" />
+    <ClCompile Include="src\hwid_spoof.cpp" />
+    <ClCompile Include="src\hunt_stats.cpp" />
     <ClCompile Include="src\overlay.cpp" />
     <ClCompile Include="src\CStatTable.cpp" />
     <ClCompile Include="src\CRole.cpp" />
@@ -127,6 +129,8 @@
   <ItemGroup>
     <ClInclude Include="src\log.h" />
     <ClInclude Include="src\base.h" />
+    <ClInclude Include="src\hwid_spoof.h" />
+    <ClInclude Include="src\hunt_stats.h" />
     <ClInclude Include="src\CGameMap.h" />
     <ClInclude Include="src\itemtype.h" />
     <ClInclude Include="src\CStatTable.h" />

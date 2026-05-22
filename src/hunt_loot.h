@@ -7,6 +7,7 @@
 
 class CHero;
 class CGameMap;
+class CItem;
 struct CMapItem;
 
 // ── HuntLootManager ───────────────────────────────────────────────────────────
@@ -33,6 +34,17 @@ public:
     void PruneLootPickupAttempts(CGameMap* map);
     void ResetLootPickupAttempts();
 
+    // ── Phase 2a: bag-full trash drop ─────────────────────────────────────────
+    // When the bag is at/above bagStoreThreshold and autoDropTrashWhenFull is on,
+    // attempt to drop one inventory item that fails the user's keep filters.
+    // Returns true if a DropItem packet was sent this tick (caller should yield
+    // the rest of its frame to let the packet land before doing other actions).
+    bool TryDropTrashItem(CHero* hero, const AutoHuntSettings& settings, DWORD now);
+
+    // Predicate: would this bagged item be dropped under the current settings?
+    // Static so it can be used by UI counters too.  Strict safety filters apply.
+    static bool IsBagItemTrash(const AutoHuntSettings& settings, const CItem& item);
+
     // ── State accessors ───────────────────────────────────────────────────────
     DWORD GetLastLootTick()   const { return m_lastLootTick; }
     void  SetLastLootTick(DWORD t) { m_lastLootTick = t; }
@@ -50,4 +62,8 @@ private:
     std::unordered_map<OBJID, LootPickupAttemptState> m_lootPickupAttempts;
     DWORD m_lastLootTick   = 0;
     OBJID m_lastLootItemId = 0;
+
+    // ── Phase 2a: trash-drop throttle ─────────────────────────────────────────
+    DWORD m_lastTrashDropTick   = 0;
+    OBJID m_lastTrashDropItemId = 0;
 };

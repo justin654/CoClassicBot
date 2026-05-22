@@ -2,6 +2,7 @@
 #include <cstdio>
 #include "overlay.h"
 #include "discord.h"
+#include "hwid_spoof.h"
 #include "hooks.h"
 #include "packets.h"
 #include "game.h"
@@ -32,9 +33,9 @@ static DWORD WINAPI InitThread(LPVOID)
 
     // Install HWID spoof hooks early — before the game collects hardware
     // identifiers for the login packet.  These hook Windows system DLLs
-    // (kernel32, iphlpapi), NOT game code, so they don't trigger the
-    // server's VM/integrity check.
-    // HwidSpoof::Init(g_hModule);
+    // (kernel32, advapi32, iphlpapi), NOT game code, so they don't trigger
+    // the server's VM/integrity check.
+    HwidSpoof::Init(g_hModule);
 
     Game::Init();   // benign - just reads the module base address
 
@@ -97,7 +98,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         ShutdownOverlay();
         CleanupPacketHook();
         CleanupHooks();
-        // HwidSpoof::Shutdown();
+        HwidSpoof::Shutdown();
         spdlog::info("[shutdown] Cleanup complete");
         Log::Shutdown();
         break;

@@ -5,6 +5,7 @@
 #include "pathfinder.h"
 #include "plugins/aim_helper_plugin.h"
 #include "hunt_settings.h"
+#include "hunt_stats.h"
 #include "plugins/mining_plugin.h"
 #include "plugins/mule_plugin.h"
 #include "plugins/follow_plugin.h"
@@ -340,6 +341,10 @@ static std::string BuildCurrentConfigSnapshot()
     AppendIntSnapshot(snapshot, "reviveRetryIntervalMs", autoHunt.reviveRetryIntervalMs);
     AppendIntSnapshot(snapshot, "minimumLootPlus", autoHunt.minimumLootPlus);
     AppendIntSnapshot(snapshot, "minimumStorePlus", autoHunt.minimumStorePlus);
+    AppendIntSnapshot(snapshot, "minimumLootGoldValue", autoHunt.minimumLootGoldValue);
+    AppendBoolSnapshot(snapshot, "autoDropTrashWhenFull", autoHunt.autoDropTrashWhenFull);
+    AppendIntSnapshot(snapshot, "autoDropMinKeepQuality", autoHunt.autoDropMinKeepQuality);
+    AppendIntSnapshot(snapshot, "autoDropMinKeepPrice", autoHunt.autoDropMinKeepPrice);
     AppendIntSnapshot(snapshot, "zoneMapId", autoHunt.zoneMapId);
     AppendIntSnapshot(snapshot, "combatMode", static_cast<int>(autoHunt.combatMode));
     AppendIntSnapshot(snapshot, "zoneMode", static_cast<int>(autoHunt.zoneMode));
@@ -417,6 +422,19 @@ static std::string BuildCurrentConfigSnapshot()
     AppendBoolSnapshot(snapshot, "lootDropNotifyEnabled", misc.lootDropNotifyEnabled);
     AppendStringSnapshot(snapshot, "notifyItemIds", SerializeU32List(misc.notifyItemIds).c_str());
     AppendStringSnapshot(snapshot, "mentionItemIds", SerializeU32List(misc.mentionItemIds).c_str());
+
+    const HuntStats::Settings& stats = HuntStats::GetSettings();
+    snapshot += "[HuntStats]\n";
+    AppendBoolSnapshot(snapshot, "discordOnKillMilestone", stats.discordOnKillMilestone);
+    AppendIntSnapshot(snapshot, "killMilestoneInterval", stats.killMilestoneInterval);
+    AppendBoolSnapshot(snapshot, "discordOnDeath", stats.discordOnDeath);
+    AppendBoolSnapshot(snapshot, "discordOnNotableDrop", stats.discordOnNotableDrop);
+    AppendIntSnapshot(snapshot, "notableDropMinQuality", stats.notableDropMinQuality);
+    AppendIntSnapshot(snapshot, "notableDropMinPlus", stats.notableDropMinPlus);
+    AppendBoolSnapshot(snapshot, "discordOnSessionStart", stats.discordOnSessionStart);
+    AppendBoolSnapshot(snapshot, "discordOnLevelUp", stats.discordOnLevelUp);
+    AppendBoolSnapshot(snapshot, "autoResetOnEnable", stats.autoResetOnEnable);
+    AppendBoolSnapshot(snapshot, "pauseWhenOutOfZone", stats.pauseWhenOutOfZone);
 
     return snapshot;
 }
@@ -518,6 +536,10 @@ static void SaveAutoHuntSection(const char* file, const char* section)
     WriteInt(file, section, "reviveRetryIntervalMs", autoHunt.reviveRetryIntervalMs);
     WriteInt(file, section, "minimumLootPlus", autoHunt.minimumLootPlus);
     WriteInt(file, section, "minimumStorePlus", autoHunt.minimumStorePlus);
+    WriteInt(file, section, "minimumLootGoldValue", autoHunt.minimumLootGoldValue);
+    WriteInt(file, section, "autoDropTrashWhenFull", autoHunt.autoDropTrashWhenFull ? 1 : 0);
+    WriteInt(file, section, "autoDropMinKeepQuality", autoHunt.autoDropMinKeepQuality);
+    WriteInt(file, section, "autoDropMinKeepPrice", autoHunt.autoDropMinKeepPrice);
     WriteInt(file, section, "zoneMapId", autoHunt.zoneMapId);
     WriteInt(file, section, "combatMode", static_cast<int>(autoHunt.combatMode));
     WriteInt(file, section, "zoneMode", static_cast<int>(autoHunt.zoneMode));
@@ -748,6 +770,14 @@ static void LoadAutoHuntSection(const char* file, const char* section)
         autoHunt.reviveRetryIntervalMs = 10000;
     autoHunt.minimumLootPlus = ReadInt(file, section, "minimumLootPlus", 0);
     autoHunt.minimumStorePlus = ReadInt(file, section, "minimumStorePlus", autoHunt.minimumLootPlus);
+    autoHunt.minimumLootGoldValue = ReadInt(file, section, "minimumLootGoldValue", 0);
+    if (autoHunt.minimumLootGoldValue < 0) autoHunt.minimumLootGoldValue = 0;
+    autoHunt.autoDropTrashWhenFull = ReadInt(file, section, "autoDropTrashWhenFull", 0) != 0;
+    autoHunt.autoDropMinKeepQuality = ReadInt(file, section, "autoDropMinKeepQuality", 0);
+    if (autoHunt.autoDropMinKeepQuality < 0) autoHunt.autoDropMinKeepQuality = 0;
+    if (autoHunt.autoDropMinKeepQuality > 9) autoHunt.autoDropMinKeepQuality = 9;
+    autoHunt.autoDropMinKeepPrice = ReadInt(file, section, "autoDropMinKeepPrice", 0);
+    if (autoHunt.autoDropMinKeepPrice < 0) autoHunt.autoDropMinKeepPrice = 0;
     autoHunt.zoneMapId = ReadInt(file, section, "zoneMapId", 0);
     autoHunt.zoneMode = static_cast<AutoHuntZoneMode>(ReadInt(file, section, "zoneMode", 0));
     autoHunt.zoneCenter.x = ReadInt(file, section, "zoneCenterX", 0);
@@ -961,6 +991,18 @@ static void SaveSharedSections(const char* file)
     WritePrivateProfileStringA("Discord", "webhookUrl", discord.webhookUrl, file);
     WritePrivateProfileStringA("Discord", "mentionUserId", discord.mentionUserId, file);
 
+    HuntStats::Settings& stats = HuntStats::GetSettings();
+    WriteInt(file, "HuntStats", "discordOnKillMilestone", stats.discordOnKillMilestone ? 1 : 0);
+    WriteInt(file, "HuntStats", "killMilestoneInterval", stats.killMilestoneInterval);
+    WriteInt(file, "HuntStats", "discordOnDeath", stats.discordOnDeath ? 1 : 0);
+    WriteInt(file, "HuntStats", "discordOnNotableDrop", stats.discordOnNotableDrop ? 1 : 0);
+    WriteInt(file, "HuntStats", "notableDropMinQuality", stats.notableDropMinQuality);
+    WriteInt(file, "HuntStats", "notableDropMinPlus", stats.notableDropMinPlus);
+    WriteInt(file, "HuntStats", "discordOnSessionStart", stats.discordOnSessionStart ? 1 : 0);
+    WriteInt(file, "HuntStats", "discordOnLevelUp", stats.discordOnLevelUp ? 1 : 0);
+    WriteInt(file, "HuntStats", "autoResetOnEnable", stats.autoResetOnEnable ? 1 : 0);
+    WriteInt(file, "HuntStats", "pauseWhenOutOfZone", stats.pauseWhenOutOfZone ? 1 : 0);
+
     MiscSettings& misc = GetMiscSettings();
     WriteInt(file, "Misc", "whisperNotifyEnabled", misc.whisperNotifyEnabled ? 1 : 0);
     WriteInt(file, "Misc", "itemNotifyEnabled", misc.itemNotifyEnabled ? 1 : 0);
@@ -1009,6 +1051,19 @@ static void LoadSharedSections(const char* file)
     discord.webhookEnabled = ReadInt(file, "Discord", "webhookEnabled", 0) != 0;
     ReadString(file, "Discord", "webhookUrl", "", discord.webhookUrl, sizeof(discord.webhookUrl));
     ReadString(file, "Discord", "mentionUserId", "", discord.mentionUserId, sizeof(discord.mentionUserId));
+
+    HuntStats::Settings& stats = HuntStats::GetSettings();
+    stats = HuntStats::Settings{};
+    stats.discordOnKillMilestone = ReadInt(file, "HuntStats", "discordOnKillMilestone", 0) != 0;
+    stats.killMilestoneInterval  = ReadInt(file, "HuntStats", "killMilestoneInterval", 100);
+    stats.discordOnDeath         = ReadInt(file, "HuntStats", "discordOnDeath", 0) != 0;
+    stats.discordOnNotableDrop   = ReadInt(file, "HuntStats", "discordOnNotableDrop", 0) != 0;
+    stats.notableDropMinQuality  = ReadInt(file, "HuntStats", "notableDropMinQuality", 6);
+    stats.notableDropMinPlus     = ReadInt(file, "HuntStats", "notableDropMinPlus", 0);
+    stats.discordOnSessionStart  = ReadInt(file, "HuntStats", "discordOnSessionStart", 0) != 0;
+    stats.discordOnLevelUp       = ReadInt(file, "HuntStats", "discordOnLevelUp", 0) != 0;
+    stats.autoResetOnEnable      = ReadInt(file, "HuntStats", "autoResetOnEnable", 0) != 0;
+    stats.pauseWhenOutOfZone     = ReadInt(file, "HuntStats", "pauseWhenOutOfZone", 1) != 0;
 
     MiscSettings& misc = GetMiscSettings();
     misc = MiscSettings{};
