@@ -47,7 +47,248 @@ struct LaunchOptions
     std::string m_proxyPassword;
     uint16_t m_relayPort = 0;
     bool m_showHelp = false;
+    bool m_noPrompt = false;  // Skip SOCKS5 dialog if true
 };
+
+// Forward declarations for dialog function
+static bool ParseEndpoint(const std::string& text, Endpoint* endpoint);
+
+// SOCKS5 configuration dialog data
+struct Socks5DialogData
+{
+    char host[256] = "";
+    char port[8] = "1080";
+    char username[128] = "";
+    char password[128] = "";
+    bool useAuth = false;
+    bool confirmed = false;
+};
+
+enum class Socks5PromptResult
+{
+    Disabled,
+    Configured,
+    Aborted
+};
+
+// Simple input box using Windows API - returns true if user clicked OK
+static bool InputBox(HWND parent, const char* title, const char* prompt, char* buffer, size_t bufferSize,
+                     const char* defaultValue = "", bool password = false)
+{
+    WNDCLASSA wc = {};
+    static bool classRegistered = false;
+    static char inputBuffer[256];
+    static bool inputConfirmed = false;
+
+    if (!classRegistered) {
+        wc.lpfnWndProc = [](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) -> LRESULT {
+            switch (msg) {
+            case WM_CREATE:
+                {
+                    CREATESTRUCT* cs = reinterpret_cast<CREATESTRUCT*>(lParam);
+                    SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+                }
+                return 0;
+            case WM_COMMAND:
+                if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+                    HWND edit = GetDlgItem(hwnd, 1001);
+                    if (LOWORD(wParam) == IDOK) {
+                        GetWindowTextA(edit, inputBuffer, sizeof(inputBuffer));
+                        inputConfirmed = true;
+                    } else {
+                        inputConfirmed = false;
+                    }
+                    DestroyWindow(hwnd);
+                }
+                return 0;
+            case WM_CLOSE:
+                inputConfirmed = false;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            return DefWindowProcA(hwnd, msg, wParam, lParam);
+        };
+        wc.hInstance = GetModuleHandleA(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.lpszClassName = "InputBoxDlg";
+        RegisterClassA(&wc);
+        classRegistered = true;
+    }
+
+    strncpy_s(inputBuffer, defaultValue, sizeof(inputBuffer) - 1);
+    inputBuffer[sizeof(inputBuffer) - 1] = 0;
+    inputConfirmed = false;
+
+    RECT rect;
+    if (parent) {
+        GetWindowRect(parent, &rect);
+    } else {
+        rect.left = 0; rect.top = 0;
+        rect.right = GetSystemMetrics(SM_CXSCREEN);
+        rect.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+    int x = rect.left + (rect.right - rect.left - 400) / 2;
+    int y = rect.top + (rect.bottom - rect.top - 150) / 2;
+
+    HWND dlg = CreateWindowExA(
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        "InputBoxDlg",
+        title,
+        WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_VISIBLE,
+        x, y, 400, 150,
+        parent, nullptr, GetModuleHandleA(nullptr), nullptr);
+
+    if (!dlg) return false;
+
+    CreateWindowA("STATIC", prompt,
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        10, 10, 370, 30, dlg, nullptr, GetModuleHandleA(nullptr), nullptr);
+
+    DWORD editStyle = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL;
+    if (password)
+        editStyle |= ES_PASSWORD;
+
+    HWND edit = CreateWindowA("EDIT", inputBuffer,
+        editStyle,
+        10, 45, 370, 25, dlg, reinterpret_cast<HMENU>(1001), GetModuleHandleA(nullptr), nullptr);
+
+    CreateWindowA("BUTTON", "OK",
+        WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+        100, 85, 90, 30, dlg, reinterpret_cast<HMENU>(IDOK), GetModuleHandleA(nullptr), nullptr);
+
+    CreateWindowA("BUTTON", "Cancel",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        210, 85, 90, 30, dlg, reinterpret_cast<HMENU>(IDCANCEL), GetModuleHandleA(nullptr), nullptr);
+
+    SetFocus(edit);
+    
+    MSG msg;
+    while (IsWindow(dlg)) {
+        if (GetMessageA(&msg, nullptr, 0, 0)) {
+            if (!IsDialogMessage(dlg, &msg)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+        }
+    }
+
+    if (inputConfirmed) {
+        strncpy_s(buffer, bufferSize, inputBuffer, bufferSize - 1);
+        buffer[bufferSize - 1] = 0;
+        return true;
+    }
+    return false;
+}
+
+static Socks5PromptResult ShowSocks5ConfigDialog(LaunchOptions* options)
+{
+    if (!options)
+        return Socks5PromptResult::Aborted;
+
+    // First ask if they want to use SOCKS5 at all
+    int useProxy = MessageBoxA(nullptr,
+        "Do you want to use a SOCKS5 proxy to hide your real IP address?\n\n"
+        "Select YES to configure proxy settings.\n"
+        "Select NO to connect directly (your real IP will be visible).",
+        "coclassic - SOCKS5 Proxy Setup",
+        MB_YESNO | MB_ICONQUESTION | MB_TOPMOST);
+
+    if (useProxy != IDYES) {
+        return Socks5PromptResult::Disabled;
+    }
+
+    // Load saved settings
+    Socks5DialogData data;
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    fs::path savePath = fs::path(exePath).parent_path() / "socks5_config.txt";
+    
+    if (fs::exists(savePath)) {
+        std::ifstream file(savePath);
+        if (file) {
+            std::string line;
+            if (std::getline(file, line)) strncpy_s(data.host, line.c_str(), sizeof(data.host) - 1);
+            if (std::getline(file, line)) strncpy_s(data.port, line.c_str(), sizeof(data.port) - 1);
+            if (std::getline(file, line)) data.useAuth = (line == "1");
+            if (std::getline(file, line)) strncpy_s(data.username, line.c_str(), sizeof(data.username) - 1);
+        }
+    }
+
+    // Defaults
+    if (data.host[0] == '\0') strncpy_s(data.host, "127.0.0.1", sizeof(data.host));
+    if (data.port[0] == '\0') strncpy_s(data.port, "1080", sizeof(data.port));
+
+    // Ask for proxy host:port
+    char hostPort[300];
+    snprintf(hostPort, sizeof(hostPort), "%s:%s", data.host, data.port);
+    
+    if (!InputBox(nullptr, "SOCKS5 Proxy - Host:Port",
+        "Enter proxy address (e.g., 127.0.0.1:1080 or proxy.example.com:1080):",
+        hostPort, sizeof(hostPort), hostPort)) {
+        return Socks5PromptResult::Aborted;
+    }
+
+    // Parse host:port
+    Endpoint proxy;
+    if (!ParseEndpoint(hostPort, &proxy)) {
+        MessageBoxA(nullptr, "Invalid proxy address format.\nExpected: host:port (e.g., 127.0.0.1:1080)",
+            "Configuration Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return Socks5PromptResult::Aborted;
+    }
+    strncpy_s(data.host, proxy.host.c_str(), sizeof(data.host) - 1);
+    snprintf(data.port, sizeof(data.port), "%u", proxy.port);
+
+    // Ask about authentication
+    int useAuth = MessageBoxA(nullptr,
+        "Does your SOCKS5 proxy require username/password authentication?",
+        "SOCKS5 Authentication",
+        MB_YESNO | MB_ICONQUESTION | MB_TOPMOST);
+    data.useAuth = (useAuth == IDYES);
+
+    if (data.useAuth) {
+        if (!InputBox(nullptr, "SOCKS5 Proxy - Username",
+            "Enter SOCKS5 username:",
+            data.username, sizeof(data.username), data.username)) {
+            return Socks5PromptResult::Aborted;
+        }
+
+        if (!InputBox(nullptr, "SOCKS5 Proxy - Password",
+            "Enter SOCKS5 password:",
+            data.password, sizeof(data.password), "", true)) {
+            return Socks5PromptResult::Aborted;
+        }
+    }
+
+    // Populate options
+    options->m_proxy = proxy;
+    if (data.useAuth) {
+        options->m_proxyUser = data.username;
+        options->m_proxyPassword = data.password;
+    }
+    data.confirmed = true;
+
+    // Save settings for next time
+    std::ofstream saveFile(savePath);
+    if (saveFile) {
+        saveFile << data.host << "\n";
+        saveFile << data.port << "\n";
+        saveFile << (data.useAuth ? "1" : "0") << "\n";
+        saveFile << data.username << "\n";
+    }
+
+    // Confirmation message
+    char confirmMsg[512];
+    snprintf(confirmMsg, sizeof(confirmMsg),
+        "SOCKS5 proxy configured:\n\n"
+        "Proxy: %s:%s\n"
+        "Auth: %s\n\n"
+        "Game traffic will be routed through this proxy while the relay is active.",
+        data.host, data.port,
+        data.useAuth ? "Yes (username set)" : "No");
+    MessageBoxA(nullptr, confirmMsg, "SOCKS5 Proxy Ready", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+
+    return Socks5PromptResult::Configured;
+}
 
 struct ManagedSocket
 {
@@ -69,19 +310,29 @@ static void PrintUsage()
     printf("Usage:\n");
     printf("  injector.exe\n");
     printf("  injector.exe --proxy <host:port> [--proxy-user <user>] [--proxy-pass <pass>]\n");
-    printf("              [--relay-port <port>] [--target <host:port>]\n\n");
+    printf("              [--relay-port <port>] [--target <host:port>]\n");
+    printf("  injector.exe --no-prompt\n\n");
     printf("Examples:\n");
+    printf("  injector.exe                                    (shows SOCKS5 setup dialog)\n");
     printf("  injector.exe --proxy 127.0.0.1:1080\n");
     printf("  injector.exe --proxy my-socks.example:1080 --proxy-user alice --proxy-pass secret\n");
-    printf("  injector.exe --proxy 10.0.0.5:1080 --relay-port 19959\n");
-    printf("  injector.exe\n\n");
+    printf("  injector.exe --no-prompt                          (skip dialog, no proxy)\n\n");
+    printf("Options:\n");
+    printf("  --proxy <host:port>     SOCKS5 proxy server (e.g., 127.0.0.1:1080)\n");
+    printf("  --proxy-user <user>     SOCKS5 username (optional)\n");
+    printf("  --proxy-pass <pass>     SOCKS5 password (optional)\n");
+    printf("  --relay-port <port>     Local relay port (default: same as target port)\n");
+    printf("  --target <host:port>    Override game server endpoint\n");
+    printf("  --no-prompt             Skip SOCKS5 setup dialog, run without proxy\n\n");
     printf("Notes:\n");
+    printf("  - Running without --proxy shows a GUI dialog asking if you want SOCKS5.\n");
+    printf("  - Proxy host, port, and username are saved to socks5_config.txt; password is not saved.\n");
     printf("  - Proxy mode temporarily rewrites %s to %s:<relay-port> while the launched game is running.\n",
            SERVER_CONFIG_NAME, LOCAL_RELAY_HOST);
     printf("  - The injector stays open in proxy mode to keep the local relay alive and restores %s on exit.\n",
            SERVER_CONFIG_NAME);
     printf("  - Proxy mode logs outbound client TCP chunks to %s next to injector.exe.\n", RELAY_LOG_NAME);
-    printf("  - Without --proxy, injector behavior stays close to the original launch-and-inject flow.\n");
+    printf("  - Without --proxy, the injector will show a setup dialog or connect directly.\n");
 }
 
 static bool ParseUInt16(const std::string& text, uint16_t* value)
@@ -195,6 +446,8 @@ static bool ParseArgs(int argc, char** argv, LaunchOptions* options)
 
             options->m_targetOverride = std::move(endpoint);
             ++i;
+        } else if (arg == "--no-prompt") {
+            options->m_noPrompt = true;
         } else {
             printf("[!] Unknown argument: %s\n", arg.c_str());
             return false;
@@ -1124,6 +1377,22 @@ int main(int argc, char** argv)
     if (options.m_showHelp) {
         PrintUsage();
         return 0;
+    }
+
+    // Show SOCKS5 configuration dialog if:
+    // 1. --proxy was not provided via command line
+    // 2. --no-prompt was not specified
+    if (!options.m_noPrompt && !options.m_proxy.has_value()) {
+        Socks5PromptResult promptResult = ShowSocks5ConfigDialog(&options);
+        if (promptResult == Socks5PromptResult::Configured) {
+            printf("[+] SOCKS5 proxy configured via dialog.\n");
+        } else if (promptResult == Socks5PromptResult::Disabled) {
+            printf("[*] SOCKS5 proxy not configured. Connecting directly (real IP visible).\n");
+        } else {
+            printf("[!] SOCKS5 setup was cancelled or invalid. Aborting before game launch.\n");
+            system("pause");
+            return 1;
+        }
     }
 
     const bool proxyMode = options.m_proxy.has_value();
