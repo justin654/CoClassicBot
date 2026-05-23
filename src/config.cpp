@@ -309,6 +309,7 @@ static std::string BuildCurrentConfigSnapshot()
     AppendBoolSnapshot(snapshot, "lootUnique", autoHunt.lootUnique);
     AppendBoolSnapshot(snapshot, "lootElite", autoHunt.lootElite);
     AppendBoolSnapshot(snapshot, "lootSuper", autoHunt.lootSuper);
+    AppendBoolSnapshot(snapshot, "lootMoney", autoHunt.lootMoney);
     AppendBoolSnapshot(snapshot, "storeRefined", autoHunt.storeRefined);
     AppendBoolSnapshot(snapshot, "storeUnique", autoHunt.storeUnique);
     AppendBoolSnapshot(snapshot, "storeElite", autoHunt.storeElite);
@@ -337,6 +338,7 @@ static std::string BuildCurrentConfigSnapshot()
     AppendIntSnapshot(snapshot, "selfCastIntervalMs", autoHunt.selfCastIntervalMs);
     AppendIntSnapshot(snapshot, "npcActionIntervalMs", autoHunt.npcActionIntervalMs);
     AppendIntSnapshot(snapshot, "lootPickupIgnoreMs", autoHunt.lootPickupIgnoreMs);
+    AppendIntSnapshot(snapshot, "manualControlPauseMs", autoHunt.manualControlPauseMs);
     AppendIntSnapshot(snapshot, "reviveDelayMs", autoHunt.reviveDelayMs);
     AppendIntSnapshot(snapshot, "reviveRetryIntervalMs", autoHunt.reviveRetryIntervalMs);
     AppendIntSnapshot(snapshot, "minimumLootPlus", autoHunt.minimumLootPlus);
@@ -504,6 +506,7 @@ static void SaveAutoHuntSection(const char* file, const char* section)
     WriteInt(file, section, "lootUnique", autoHunt.lootUnique ? 1 : 0);
     WriteInt(file, section, "lootElite", autoHunt.lootElite ? 1 : 0);
     WriteInt(file, section, "lootSuper", autoHunt.lootSuper ? 1 : 0);
+    WriteInt(file, section, "lootMoney", autoHunt.lootMoney ? 1 : 0);
     WriteInt(file, section, "storeRefined", autoHunt.storeRefined ? 1 : 0);
     WriteInt(file, section, "storeUnique", autoHunt.storeUnique ? 1 : 0);
     WriteInt(file, section, "storeElite", autoHunt.storeElite ? 1 : 0);
@@ -532,6 +535,7 @@ static void SaveAutoHuntSection(const char* file, const char* section)
     WriteInt(file, section, "selfCastIntervalMs", autoHunt.selfCastIntervalMs);
     WriteInt(file, section, "npcActionIntervalMs", autoHunt.npcActionIntervalMs);
     WriteInt(file, section, "lootPickupIgnoreMs", autoHunt.lootPickupIgnoreMs);
+    WriteInt(file, section, "manualControlPauseMs", autoHunt.manualControlPauseMs);
     WriteInt(file, section, "reviveDelayMs", autoHunt.reviveDelayMs);
     WriteInt(file, section, "reviveRetryIntervalMs", autoHunt.reviveRetryIntervalMs);
     WriteInt(file, section, "minimumLootPlus", autoHunt.minimumLootPlus);
@@ -657,6 +661,7 @@ static void LoadAutoHuntSection(const char* file, const char* section)
     autoHunt.lootUnique = ReadInt(file, section, "lootUnique", 0) != 0;
     autoHunt.lootElite = ReadInt(file, section, "lootElite", 0) != 0;
     autoHunt.lootSuper = ReadInt(file, section, "lootSuper", 0) != 0;
+    autoHunt.lootMoney = ReadInt(file, section, "lootMoney", 1) != 0;
     autoHunt.storeRefined = ReadInt(file, section, "storeRefined", 0) != 0;
     autoHunt.storeUnique = ReadInt(file, section, "storeUnique", 0) != 0;
     autoHunt.storeElite = ReadInt(file, section, "storeElite", 0) != 0;
@@ -758,6 +763,11 @@ static void LoadAutoHuntSection(const char* file, const char* section)
         autoHunt.lootPickupIgnoreMs = 0;
     if (autoHunt.lootPickupIgnoreMs > 300000)
         autoHunt.lootPickupIgnoreMs = 300000;
+    autoHunt.manualControlPauseMs = ReadInt(file, section, "manualControlPauseMs", autoHunt.manualControlPauseMs);
+    if (autoHunt.manualControlPauseMs < 0)
+        autoHunt.manualControlPauseMs = 0;
+    if (autoHunt.manualControlPauseMs > 30000)
+        autoHunt.manualControlPauseMs = 30000;
     autoHunt.reviveDelayMs = ReadInt(file, section, "reviveDelayMs", autoHunt.reviveDelayMs);
     if (autoHunt.reviveDelayMs < 0)
         autoHunt.reviveDelayMs = 0;

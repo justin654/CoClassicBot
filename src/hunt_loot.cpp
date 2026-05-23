@@ -114,7 +114,8 @@ std::shared_ptr<CMapItem> HuntLootManager::FindBestLoot(
         // to confirmed drops.  Items explicitly listed in lootItemIds bypass
         // the floor (user-curated whitelist always wins).
         if (settings.minimumLootGoldValue > 0
-            && !HuntTownService::IsSelectedLootItem(settings, itemRef->m_idType)) {
+            && !HuntTownService::IsSelectedLootItem(settings, itemRef->m_idType)
+            && !(settings.lootMoney && HuntTownService::IsMoneyMapItem(*itemRef))) {
             const ItemTypeInfo* info = GetItemTypeInfo(itemRef->m_idType);
             if (info && info->price < (uint32_t)settings.minimumLootGoldValue) {
                 ++skippedFilter;
@@ -127,7 +128,8 @@ std::shared_ptr<CMapItem> HuntLootManager::FindBestLoot(
         const bool confirmed = IsConfirmedDrop(itemRef->m_pos, now);
         if (!confirmed) {
             if (!HuntTownService::ShouldLootMapItem(settings, *itemRef)) { ++skippedFilter; continue; }
-            if (!HuntTownService::IsSelectedLootItem(settings, itemRef->m_idType)) {
+            if (!HuntTownService::IsSelectedLootItem(settings, itemRef->m_idType)
+                && !(settings.lootMoney && HuntTownService::IsMoneyMapItem(*itemRef))) {
                 ++skippedNotOurDrop;
                 continue;
             }

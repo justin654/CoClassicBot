@@ -146,6 +146,7 @@ protected:
     DWORD m_lastAttackTick = 0;
     DWORD m_lastPackTick = 0;
     DWORD m_lastMoveTick = 0;
+    DWORD m_manualControlPauseUntilTick = 0;
 
     Position m_pendingJumpDest = {};
     DWORD m_pendingJumpTick = 0;

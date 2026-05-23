@@ -96,6 +96,7 @@ struct AutoHuntSettings
     bool lootUnique = false;
     bool lootElite = false;
     bool lootSuper = false;
+    bool lootMoney = true;
     bool storeRefined = false;
     bool storeUnique = false;
     bool storeElite = false;
@@ -122,6 +123,7 @@ struct AutoHuntSettings
     int selfCastIntervalMs = 1000;
     int npcActionIntervalMs = 400;
     int lootPickupIgnoreMs = 30000;
+    int manualControlPauseMs = 3000;
     int reviveDelayMs = 20000;
     int reviveRetryIntervalMs = 1000;
     int minimumLootPlus = 0;

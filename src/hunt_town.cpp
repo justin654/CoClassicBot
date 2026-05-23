@@ -112,6 +112,8 @@ bool HuntTownService::NeedsArrows(const CHero* hero, const AutoHuntSettings& set
 {
     if (!settings.buyArrows || !IsArcherModeEnabled(settings) || settings.arrowTypeId == 0)
         return false;
+    if (!CanAffordArrowPurchase(hero))
+        return false;
     return CountUsableArrowPacks(hero) < settings.arrowBuyCount;
 }
 
@@ -202,13 +204,32 @@ bool HuntTownService::IsSelectedPriorityReturnItem(const AutoHuntSettings& setti
         != settings.priorityReturnItemIds.end();
 }
 
+bool HuntTownService::IsMoneyMapItem(const CMapItem& item)
+{
+    const ItemTypeInfo* info = GetItemTypeInfo(item.m_idType);
+    if (info) {
+        const std::string& name = info->name;
+        if (name == "Silver" || name == "Gold" || name == "Money")
+            return true;
+    }
+
+    return item.m_idType >= 1090000 && item.m_idType <= 1091020;
+}
+
 bool HuntTownService::ShouldLootMapItem(const AutoHuntSettings& settings, const CMapItem& item)
 {
+    if (settings.lootMoney && IsMoneyMapItem(item))
+        return true;
     if (IsSelectedLootItem(settings, item.m_idType))
         return true;
     if (MatchesSelectedLootQuality(settings, item))
         return true;
     return settings.minimumLootPlus > 0 && item.GetPlus() >= settings.minimumLootPlus;
+}
+
+bool HuntTownService::CanAffordArrowPurchase(const CHero* hero)
+{
+    return hero && hero->GetSilver() >= kArrowCost;
 }
 
 bool HuntTownService::IsTreasureBankDragonBallFamily(const CItem& item) const

@@ -7,6 +7,7 @@
 #include "CMagic.h"
 #include "CItem.h"
 #include "config.h"
+#include "hunt_town.h"
 #include "itemtype.h"
 #include "pathfinder.h"
 #include "log.h"
@@ -1023,6 +1024,8 @@ bool ArcherHuntPlugin::TryManageArrows(CHero* hero, const AutoHuntSettings& sett
 bool ArcherHuntPlugin::NeedsArrows(const CHero* hero, const AutoHuntSettings& settings) const
 {
     if (!IsArcherModeEnabled(settings) || !settings.buyArrows)
+        return false;
+    if (!HuntTownService::CanAffordArrowPurchase(hero))
         return false;
     return CountUsableArrowPacks(hero) < settings.arrowBuyCount;
 }

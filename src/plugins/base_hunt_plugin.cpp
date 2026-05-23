@@ -55,6 +55,8 @@ constexpr int kMinNpcActionIntervalMs = 100;
 constexpr int kMaxNpcActionIntervalMs = 2000;
 constexpr int kMinLootPickupIgnoreMs = 0;
 constexpr int kMaxLootPickupIgnoreMs = 300000;
+constexpr int kMinManualControlPauseMs = 0;
+constexpr int kMaxManualControlPauseMs = 30000;
 constexpr int kMinReviveDelayMs = 0;
 constexpr int kMaxReviveDelayMs = 60000;
 constexpr int kMinReviveRetryIntervalMs = 100;
@@ -96,6 +98,11 @@ DWORD GetItemActionIntervalMs(const AutoHuntSettings& settings)
 DWORD GetLootSpawnGraceMs(const AutoHuntSettings& settings)
 {
     return ClampMs(settings.lootSpawnGraceMs, kMinLootSpawnGraceMs, kMaxLootSpawnGraceMs);
+}
+
+DWORD GetManualControlPauseMs(const AutoHuntSettings& settings)
+{
+    return ClampMs(settings.manualControlPauseMs, kMinManualControlPauseMs, kMaxManualControlPauseMs);
 }
 
 DWORD GetReviveDelayMs(const AutoHuntSettings& settings)
@@ -1072,6 +1079,13 @@ void BaseHuntPlugin::Update()
 
     UpdatePendingJumpState(hero, GetTickCount());
 
+    const DWORD now = GetTickCount();
+    const bool manualControlPaused = TickIsFuture(m_manualControlPauseUntilTick, now);
+    if (manualControlPaused) {
+        SetState(AutoHuntState::Ready, "Manual control pause");
+        return;
+    }
+
     {
         const HuntBuffCallbacks buffCb = MakeBuffCallbacks(hero, map, settings);
         if (m_buffMgr.TryPreLandingSafety(hero, map, settings, buffCb))
@@ -1139,13 +1153,13 @@ void BaseHuntPlugin::Update()
 
     // Meteor packing (shared)
     if (settings.packMeteorsIntoScrolls && hero) {
-        const DWORD now = GetTickCount();
-        if (now - m_lastPackTick >= GetItemActionIntervalMs(settings)) {
+        const DWORD packNow = GetTickCount();
+        if (packNow - m_lastPackTick >= GetItemActionIntervalMs(settings)) {
             if (CountInventoryItemsByType(hero, ItemTypeId::METEOR) >= 10) {
                 CItem* meteor = FindInventoryItemByType(hero, ItemTypeId::METEOR);
                 if (meteor) {
                     hero->UseItem(meteor->GetID());
-                    m_lastPackTick = now;
+                    m_lastPackTick = packNow;
                     SetState(AutoHuntState::Recover, "Packing Meteors into MeteorScrolls");
                     return;
                 }
@@ -1223,7 +1237,6 @@ void BaseHuntPlugin::Update()
     }
 
     // ── Combat phase (virtual dispatch) ─────────────────────────────────
-    const DWORD now = GetTickCount();
     const bool hasPendingJump = UpdatePendingJumpState(hero, now);
 
     const bool approachCommitted = (m_state == AutoHuntState::ApproachTarget || m_state == AutoHuntState::LootNearby)
@@ -1318,8 +1331,19 @@ bool BaseHuntPlugin::OnMapClick(const Position& tile)
 {
     AutoHuntSettings& settings = GetAutoHuntSettings();
     CGameMap* map = Game::GetMap();
-    if (!map || m_zoneCaptureMode == ZoneCaptureMode::None)
+    if (!map)
         return false;
+
+    if (m_zoneCaptureMode == ZoneCaptureMode::None) {
+        const DWORD pauseMs = GetManualControlPauseMs(settings);
+        if (m_enabled && pauseMs > 0) {
+            m_manualControlPauseUntilTick = GetTickCount() + pauseMs;
+            Pathfinder::Get().Stop();
+            ClearPendingJumpState();
+            SetState(AutoHuntState::Ready, "Manual control pause");
+        }
+        return false;
+    }
 
     settings.zoneMapId = map->GetId();
 
@@ -1772,16 +1796,19 @@ void BaseHuntPlugin::RenderSettingsUI()
         ImGui::SliderInt("Self Cast Interval (ms)", &settings.selfCastIntervalMs, kMinSelfCastIntervalMs, kMaxSelfCastIntervalMs);
         ImGui::SliderInt("Town/NPC Action Interval (ms)", &settings.npcActionIntervalMs, kMinNpcActionIntervalMs, kMaxNpcActionIntervalMs);
         ImGui::SliderInt("Loot Retry Ignore (ms)", &settings.lootPickupIgnoreMs, kMinLootPickupIgnoreMs, kMaxLootPickupIgnoreMs);
+        ImGui::SliderInt("Manual Click Pause (ms)", &settings.manualControlPauseMs, kMinManualControlPauseMs, kMaxManualControlPauseMs);
         ImGui::SliderInt("Revive Delay (ms)", &settings.reviveDelayMs, kMinReviveDelayMs, kMaxReviveDelayMs);
         ImGui::SliderInt("Revive Retry Interval (ms)", &settings.reviveRetryIntervalMs,
             kMinReviveRetryIntervalMs, kMaxReviveRetryIntervalMs);
         ImGui::TextDisabled("Lower intervals act faster but send actions more aggressively.");
         ImGui::TextDisabled("Loot Spawn Grace waits after a ground item first appears before sending pickup.");
+        ImGui::TextDisabled("Manual Click Pause delays hunt movement/pathing after a map click (0 = disabled).");
     }
 
     if (ImGui::CollapsingHeader("Loot Rules", kSectionFlags)) {
         ImGui::SliderInt("Loot Range", &settings.lootRange, 0, CGameMap::MAX_JUMP_DIST);
         ImGui::SliderInt("Minimum Loot Plus", &settings.minimumLootPlus, 0, 12);
+        ImGui::Checkbox("Loot Silver/Gold/Money", &settings.lootMoney);
         ImGui::TextDisabled("Items in the Loot Items list are always looted. Other drops are only looted if confirmed by a system message (our kill).");
         ImGui::Text("Loot by quality:");
         ImGui::Checkbox("Refined##basehuntlootqualityrefined", &settings.lootRefined);

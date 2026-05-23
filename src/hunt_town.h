@@ -102,7 +102,9 @@ public:
     static bool IsSelectedLootItem(const AutoHuntSettings& settings, uint32_t typeId);
     static bool IsSelectedWarehouseItem(const AutoHuntSettings& settings, uint32_t typeId);
     static bool IsSelectedPriorityReturnItem(const AutoHuntSettings& settings, uint32_t typeId);
+    static bool IsMoneyMapItem(const CMapItem& item);
     static bool ShouldLootMapItem(const AutoHuntSettings& settings, const CMapItem& item);
+    static bool CanAffordArrowPurchase(const CHero* hero);
 
     bool IsTreasureBankDragonBallFamily(const CItem& item) const;
     bool IsTreasureBankMeteorFamily(const CItem& item) const;
