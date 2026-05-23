@@ -1060,8 +1060,8 @@ int ArcherHuntPlugin::CountUsableArrowPacks(const CHero* hero) const
 void ArcherHuntPlugin::RenderCombatUI(AutoHuntSettings& settings)
 {
     ImGui::Checkbox("Use Scatter Logic", &settings.useScatterLogic);
-    ImGui::SliderInt("Ranged Attack Range", &settings.rangedAttackRange, 0, CGameMap::MAX_JUMP_DIST);
-    ImGui::SliderInt("Safety Distance", &settings.archerSafetyDistance, 0, CGameMap::MAX_JUMP_DIST);
+    ImGui::SliderInt("Attack From This Many Tiles Away", &settings.rangedAttackRange, 0, CGameMap::MAX_JUMP_DIST);
+    ImGui::SliderInt("Archer Safety Distance", &settings.archerSafetyDistance, 0, CGameMap::MAX_JUMP_DIST);
     if (settings.useScatterLogic) {
         ImGui::Checkbox("Prioritize Scatter Clumps", &settings.prioritizeScatterClumps);
         ImGui::SliderInt("Minimum Scatter Hits", &settings.minimumScatterHits, 1, 12);
@@ -1076,19 +1076,4 @@ void ArcherHuntPlugin::RenderCombatUI(AutoHuntSettings& settings)
     ImGui::TextDisabled("0 disables the regular archer attack range check and attacks immediately.");
     ImGui::TextDisabled("When set above 0, auto hunt stops and attacks from that many tiles away.");
     ImGui::TextDisabled("Safety Distance prevents jumping closer than N tiles to any mob (0 = disabled).");
-
-    ImGui::Checkbox("Buy Arrows", &settings.buyArrows);
-    if (settings.buyArrows) {
-        int arrowTypeIdInt = (int)settings.arrowTypeId;
-        if (ImGui::InputInt("Arrow Type ID", &arrowTypeIdInt, 1, 100))
-            settings.arrowTypeId = arrowTypeIdInt > 0 ? (uint32_t)arrowTypeIdInt : 0;
-        if (settings.arrowTypeId != 0) {
-            if (const ItemTypeInfo* info = GetItemTypeInfo(settings.arrowTypeId))
-                ImGui::TextDisabled("  -> %s", info->name.c_str());
-            else
-                ImGui::TextDisabled("  -> (unknown type)");
-        }
-        ImGui::SliderInt("Arrow Packs to Maintain", &settings.arrowBuyCount, 1, 10);
-    }
-
 }

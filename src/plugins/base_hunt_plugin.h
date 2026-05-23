@@ -10,6 +10,7 @@
 
 class CHero;
 class CRole;
+class CRoleMgr;
 class CGameMap;
 class TravelPlugin;
 class CItem;
@@ -31,6 +32,8 @@ public:
     void RenderUI() override;
     bool OnMapClick(const Position& tile) override;
     const char* GetName() const override = 0;  // subclass provides name
+    void RenderDashboardUI();
+    void SetAutomationEnabled(bool enabled);
 
     // Renders shared hunting settings (zone, monsters, timings, loot, etc.)
     void RenderSharedUI();
@@ -128,6 +131,19 @@ protected:
     void RenderItemSelector(AutoHuntSettings& settings);
     void RenderSelectedItemList(const char* title, const char* clearButtonLabel,
         const char* tableId, std::vector<uint32_t>& itemIds);
+    BaseHuntPlugin* FindHuntPluginForMode(AutoHuntCombatMode mode) const;
+    BaseHuntPlugin* GetSelectedModePlugin() const;
+    void ApplyHuntModeSelection(AutoHuntCombatMode mode, bool enabled);
+    void RenderQuickSetupSection(BaseHuntPlugin* modePlugin);
+    void RenderCombatSection(BaseHuntPlugin* modePlugin);
+    void RenderLootSection();
+    void RenderTownRunsSection();
+    void RenderSafetySection();
+    void RenderAdvancedSection();
+    void RenderDebugSection();
+    void RenderZoneSetupUI(AutoHuntSettings& settings, CHero* hero);
+    void RenderMonsterFilterUI(AutoHuntSettings& settings, CRoleMgr* mgr);
+    void RenderSkillPriorityUI(AutoHuntSettings& settings);
 
     // ── Shared state members ─────────────────────────────────────────────
     AutoHuntState m_state = AutoHuntState::Idle;

@@ -400,10 +400,10 @@ void MeleeHuntPlugin::RenderCombatUI(AutoHuntSettings& settings)
 {
     ImGui::Checkbox("Speedhack If No Players Nearby", &settings.usePacketJump);
     ImGui::TextDisabled("Send raw jump packets for faster movement. Falls back to normal jumps when players are nearby.");
-    ImGui::SliderInt("Action Radius", &settings.actionRadius, 1, CGameMap::MAX_JUMP_DIST);
+    ImGui::SliderInt("Stay Within Zone Radius", &settings.actionRadius, 1, CGameMap::MAX_JUMP_DIST);
     ImGui::Checkbox("Prioritize Mob Clumps", &settings.prioritizeMobClumps);
     ImGui::SliderInt("Clump Radius", &settings.clumpRadius, 1, 18);
     ImGui::SliderInt("Minimum Mob Clump", &settings.minimumMobClump, 2, 12);
-    ImGui::TextDisabled("Prefer nearby targets inside Action Radius before chasing distant mob clumps.");
+    ImGui::TextDisabled("Prefer nearby targets inside Stay Within Zone Radius before chasing distant mob clumps.");
     ImGui::TextDisabled("If enough mobs are already inside Clump Radius, auto hunt clears that local pack first.");
 }

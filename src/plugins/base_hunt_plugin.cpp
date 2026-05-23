@@ -198,6 +198,24 @@ bool IsArcherModeEnabled(const AutoHuntSettings& settings)
     return settings.archerMode || settings.combatMode == AutoHuntCombatMode::Archer;
 }
 
+const char* CombatModeLabel(AutoHuntCombatMode mode)
+{
+    return mode == AutoHuntCombatMode::Archer ? "Archer" : "Melee";
+}
+
+void HelpMarker(const char* text)
+{
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        ImGui::SetTooltip("%s", text);
+}
+
+void HelpMarkerOnSameLine(const char* text)
+{
+    ImGui::SameLine();
+    HelpMarker(text);
+}
+
 } // anonymous namespace
 
 // ── StateName (file-scope free function) ─────────────────────────────────────
@@ -1527,14 +1545,466 @@ void BaseHuntPlugin::RenderItemSelector(AutoHuntSettings& settings)
     ImGui::EndChild();
 }
 
+BaseHuntPlugin* BaseHuntPlugin::FindHuntPluginForMode(AutoHuntCombatMode mode) const
+{
+    for (const auto& plugin : PluginManager::Get().GetPlugins()) {
+        auto* hunt = dynamic_cast<BaseHuntPlugin*>(plugin.get());
+        if (hunt && hunt->GetExpectedCombatMode() == mode)
+            return hunt;
+    }
+    return nullptr;
+}
+
+BaseHuntPlugin* BaseHuntPlugin::GetSelectedModePlugin() const
+{
+    if (BaseHuntPlugin* exact = FindHuntPluginForMode(GetAutoHuntSettings().combatMode))
+        return exact;
+
+    for (const auto& plugin : PluginManager::Get().GetPlugins()) {
+        if (auto* hunt = dynamic_cast<BaseHuntPlugin*>(plugin.get()))
+            return hunt;
+    }
+    return nullptr;
+}
+
+void BaseHuntPlugin::SetAutomationEnabled(bool enabled)
+{
+    if (!enabled && m_enabled)
+        StopAutomation(true);
+    m_enabled = enabled;
+}
+
+void BaseHuntPlugin::ApplyHuntModeSelection(AutoHuntCombatMode mode, bool enabled)
+{
+    AutoHuntSettings& settings = GetAutoHuntSettings();
+    bool wasAnyEnabled = false;
+    for (const auto& plugin : PluginManager::Get().GetPlugins()) {
+        if (auto* hunt = dynamic_cast<BaseHuntPlugin*>(plugin.get()); hunt && hunt->m_enabled)
+            wasAnyEnabled = true;
+    }
+
+    settings.combatMode = mode;
+    settings.archerMode = (mode == AutoHuntCombatMode::Archer);
+    settings.enabled = enabled;
+
+    for (const auto& plugin : PluginManager::Get().GetPlugins()) {
+        auto* hunt = dynamic_cast<BaseHuntPlugin*>(plugin.get());
+        if (!hunt)
+            continue;
+
+        const bool shouldEnable = enabled && hunt->GetExpectedCombatMode() == mode;
+        if (!shouldEnable) {
+            hunt->SetAutomationEnabled(false);
+        } else {
+            hunt->m_enabled = true;
+        }
+    }
+
+    if (enabled && !wasAnyEnabled && HuntStats::GetSettings().autoResetOnEnable)
+        HuntStats::Reset();
+}
+
+void BaseHuntPlugin::RenderSkillPriorityUI(AutoHuntSettings& settings)
+{
+    bool skillChanged = false;
+    for (int i = 0; i < kHuntSkillCount; ++i) {
+        auto& entry = settings.skillPriorities[i];
+        ImGui::PushID(i);
+
+        char label[64];
+        snprintf(label, sizeof(label), "%d. %s", i + 1, HuntSkillName(entry.type));
+        if (ImGui::Checkbox(label, &entry.enabled))
+            skillChanged = true;
+
+        ImGui::SameLine();
+        if (i > 0) {
+            if (ImGui::SmallButton("^")) {
+                std::swap(settings.skillPriorities[i], settings.skillPriorities[i - 1]);
+                skillChanged = true;
+            }
+        } else {
+            ImGui::BeginDisabled();
+            ImGui::SmallButton("^");
+            ImGui::EndDisabled();
+        }
+
+        ImGui::SameLine();
+        if (i < kHuntSkillCount - 1) {
+            if (ImGui::SmallButton("v")) {
+                std::swap(settings.skillPriorities[i], settings.skillPriorities[i + 1]);
+                skillChanged = true;
+            }
+        } else {
+            ImGui::BeginDisabled();
+            ImGui::SmallButton("v");
+            ImGui::EndDisabled();
+        }
+
+        if (entry.enabled && entry.type == HuntSkillType::Fly) {
+            ImGui::Indent();
+            if (ImGui::Checkbox("Only Cast Fly With Cyclone", &settings.flyOnlyWithCyclone))
+                skillChanged = true;
+            ImGui::Unindent();
+        }
+
+        if (entry.enabled && entry.type == HuntSkillType::Stigma) {
+            ImGui::Indent();
+            if (ImGui::Checkbox("Pick Up Nearby Mana Potion For Stigma", &settings.pickupNearbyManaPotionForStigma))
+                skillChanged = true;
+            ImGui::Unindent();
+        }
+
+        ImGui::PopID();
+    }
+
+    if (skillChanged)
+        settings.SyncSkillBoolsFromPriorities();
+}
+
+void BaseHuntPlugin::RenderZoneSetupUI(AutoHuntSettings& settings, CHero* hero)
+{
+    static const char* kZoneModes[] = { "Circle", "Polygon" };
+    int zoneMode = static_cast<int>(settings.zoneMode);
+    if (ImGui::Combo("Zone Shape", &zoneMode, kZoneModes, IM_ARRAYSIZE(kZoneModes))) {
+        settings.zoneMode = static_cast<AutoHuntZoneMode>(zoneMode);
+        m_zoneCaptureMode = ZoneCaptureMode::None;
+    }
+
+    ImGui::Text("Zone Map: %u", settings.zoneMapId);
+    ImGui::InputInt2("Zone Center", &settings.zoneCenter.x);
+    if (settings.zoneMode == AutoHuntZoneMode::Circle) {
+        ImGui::SliderInt("Stay Within Zone Radius", &settings.zoneRadius, 1, 80);
+        HelpMarkerOnSameLine("The bot tries to remain inside this circle.");
+    }
+
+    if (hero && ImGui::Button("Use Hero Position")) {
+        settings.zoneMapId = m_lastMapId;
+        settings.zoneCenter = hero->m_posMap;
+    }
+
+    if (settings.zoneMode == AutoHuntZoneMode::Circle) {
+        ImGui::SameLine();
+        if (ImGui::Button("Capture Center From Map"))
+            m_zoneCaptureMode = ZoneCaptureMode::CircleCenter;
+        ImGui::SameLine();
+        if (ImGui::Button("Capture Radius From Map"))
+            m_zoneCaptureMode = ZoneCaptureMode::CircleRadius;
+    } else {
+        ImGui::SameLine();
+        if (ImGui::Button(m_zoneCaptureMode == ZoneCaptureMode::PolygonVertex
+                ? "Stop Polygon Capture"
+                : "Add Polygon Vertices")) {
+            m_zoneCaptureMode = (m_zoneCaptureMode == ZoneCaptureMode::PolygonVertex)
+                ? ZoneCaptureMode::None
+                : ZoneCaptureMode::PolygonVertex;
+            m_editDragVertex = -1;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear Polygon")) {
+            settings.zonePolygon.clear();
+            m_editDragVertex = -1;
+        }
+        ImGui::Text("Polygon Vertices: %d", (int)settings.zonePolygon.size());
+    }
+
+    const char* captureText = "Capture: idle";
+    switch (m_zoneCaptureMode) {
+        case ZoneCaptureMode::CircleCenter: captureText = "Capture: click the map to set the zone center."; break;
+        case ZoneCaptureMode::CircleRadius: captureText = "Capture: click the map to set the zone radius."; break;
+        case ZoneCaptureMode::PolygonVertex: captureText = "Capture: click the map to add polygon vertices."; break;
+        case ZoneCaptureMode::None: break;
+    }
+    ImGui::TextDisabled("%s", captureText);
+}
+
+void BaseHuntPlugin::RenderMonsterFilterUI(AutoHuntSettings& settings, CRoleMgr* mgr)
+{
+    ImGui::InputText("Target Monster Names", settings.monsterNames, IM_ARRAYSIZE(settings.monsterNames));
+    ImGui::InputText("Ignore Monster Names", settings.monsterIgnoreNames, IM_ARRAYSIZE(settings.monsterIgnoreNames));
+    ImGui::InputText("Prefer Monster Names", settings.monsterPreferNames, IM_ARRAYSIZE(settings.monsterPreferNames));
+    ImGui::TextDisabled("All lists are comma-separated. Ignore rules win over target rules.");
+    ImGui::TextDisabled("Prefer names are tried first, then the bot falls back to other valid targets.");
+
+    if (mgr && ImGui::TreeNode("Nearby Monster Names")) {
+        std::vector<std::string> names;
+        std::unordered_set<std::string> seen;
+        for (size_t i = 0; i < mgr->m_deqRole.size() && i < 500; ++i) {
+            const auto& roleRef = mgr->m_deqRole[i];
+            if (!roleRef || !roleRef->IsMonster())
+                continue;
+
+            const std::string name = roleRef->GetName();
+            if (seen.insert(name).second)
+                names.push_back(name);
+        }
+
+        std::sort(names.begin(), names.end());
+        for (const std::string& name : names) {
+            ImGui::PushID(name.c_str());
+            ImGui::TextUnformatted(name.c_str());
+            ImGui::SameLine(180.0f);
+            if (ImGui::SmallButton("Target"))
+                AppendFilterToken(settings.monsterNames, sizeof(settings.monsterNames), name.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Ignore"))
+                AppendFilterToken(settings.monsterIgnoreNames, sizeof(settings.monsterIgnoreNames), name.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Prefer"))
+                AppendFilterToken(settings.monsterPreferNames, sizeof(settings.monsterPreferNames), name.c_str());
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
+}
+
+void BaseHuntPlugin::RenderQuickSetupSection(BaseHuntPlugin* /*modePlugin*/)
+{
+    AutoHuntSettings& settings = GetAutoHuntSettings();
+    CHero* hero = Game::GetHero();
+    CRoleMgr* mgr = Game::GetRoleMgr();
+
+    bool huntEnabled = settings.enabled;
+    int modeIndex = static_cast<int>(settings.combatMode);
+    static const char* kModes[] = { "Melee", "Archer" };
+
+    if (ImGui::Checkbox("Enable Hunting", &huntEnabled))
+        ApplyHuntModeSelection(static_cast<AutoHuntCombatMode>(modeIndex), huntEnabled);
+    if (ImGui::Combo("Mode", &modeIndex, kModes, IM_ARRAYSIZE(kModes)))
+        ApplyHuntModeSelection(static_cast<AutoHuntCombatMode>(modeIndex), huntEnabled);
+
+    ImGui::SeparatorText("Set Hunt Zone");
+    RenderZoneSetupUI(settings, hero);
+
+    ImGui::SeparatorText("Target Monsters");
+    RenderMonsterFilterUI(settings, mgr);
+
+    ImGui::SeparatorText("Ready Check");
+    const bool hasValidZone = HasValidZone(settings);
+    const bool hasHero = hero != nullptr;
+    ImGui::TextColored(hasValidZone ? ImVec4(0.45f, 0.90f, 0.55f, 1.0f) : ImVec4(1.0f, 0.75f, 0.35f, 1.0f),
+        "Zone: %s", hasValidZone ? "Configured" : "Missing or invalid");
+    ImGui::TextColored(hasHero ? ImVec4(0.45f, 0.90f, 0.55f, 1.0f) : ImVec4(1.0f, 0.75f, 0.35f, 1.0f),
+        "Hero: %s", hasHero ? "Ready" : "Waiting for game data");
+    ImGui::Text("Selected Mode: %s", CombatModeLabel(settings.combatMode));
+    ImGui::Text("Current State: %s", GetStateName());
+    ImGui::TextWrapped("Current Reason: %s", m_statusText);
+
+    std::string currentTarget = "None";
+    if (mgr && m_targetId != 0) {
+        for (size_t i = 0; i < mgr->m_deqRole.size() && i < 500; ++i) {
+            const auto& roleRef = mgr->m_deqRole[i];
+            if (roleRef && roleRef->GetID() == m_targetId) {
+                currentTarget = std::string(roleRef->GetName()) + " (" + std::to_string(m_targetId) + ")";
+                break;
+            }
+        }
+    }
+    const uint32_t silver = hero ? hero->GetSilver() : 0;
+    const int arrowPacks = (hero && settings.arrowTypeId != 0)
+        ? CountInventoryItemsByType(hero, settings.arrowTypeId)
+        : 0;
+    ImGui::TextWrapped("Current Target: %s", currentTarget.c_str());
+    ImGui::Text("Bag Count: %d / %d", (int)m_lastBagCount, CHero::MAX_BAG_ITEMS);
+    ImGui::Text("Silver: %u", silver);
+    ImGui::Text("Arrow Packs: %d", arrowPacks);
+
+    HuntStats::RenderUI();
+}
+
+void BaseHuntPlugin::RenderCombatSection(BaseHuntPlugin* modePlugin)
+{
+    AutoHuntSettings& settings = GetAutoHuntSettings();
+    ImGui::TextDisabled("Combat behavior for %s mode.", CombatModeLabel(settings.combatMode));
+    if (modePlugin)
+        modePlugin->RenderCombatUI(settings);
+
+    ImGui::SeparatorText("Targeting");
+    ImGui::SliderInt("Only Target Mobs Within", &settings.mobSearchRange, 0, CGameMap::MAX_JUMP_DIST);
+    HelpMarkerOnSameLine("0 means unlimited target search range.");
+
+    ImGui::SeparatorText("Recovery");
+    ImGui::Checkbox("Use Potions", &settings.usePotions);
+    if (settings.usePotions) {
+        ImGui::SliderInt("HP Potion %", &settings.hpPotionPercent, 1, 99);
+        ImGui::SliderInt("Mana Potion %", &settings.manaPotionPercent, 1, 99);
+        ImGui::Checkbox("Pick Up Nearby HP Potion When Low", &settings.pickupNearbyHpPotionWhenLow);
+    }
+
+    ImGui::SeparatorText("Skill Priority");
+    RenderSkillPriorityUI(settings);
+}
+
+void BaseHuntPlugin::RenderLootSection()
+{
+    AutoHuntSettings& settings = GetAutoHuntSettings();
+    ImGui::Checkbox("Loot Silver / Gold / Money", &settings.lootMoney);
+    ImGui::SliderInt("Loot Range", &settings.lootRange, 0, CGameMap::MAX_JUMP_DIST);
+    ImGui::SliderInt("Minimum Loot Plus", &settings.minimumLootPlus, 0, 12);
+    ImGui::InputInt("Minimum Sell Value to Loot", &settings.minimumLootGoldValue, 100, 1000);
+    if (settings.minimumLootGoldValue < 0)
+        settings.minimumLootGoldValue = 0;
+    HelpMarkerOnSameLine("Items in the Loot list always bypass this value filter.");
+
+    ImGui::Text("Loot by quality:");
+    ImGui::Checkbox("Refined##basehuntlootqualityrefined", &settings.lootRefined);
+    ImGui::SameLine();
+    ImGui::Checkbox("Unique##basehuntlootqualityunique", &settings.lootUnique);
+    ImGui::SameLine();
+    ImGui::Checkbox("Elite##basehuntlootqualityelite", &settings.lootElite);
+    ImGui::SameLine();
+    ImGui::Checkbox("Super##basehuntlootqualitysuper", &settings.lootSuper);
+
+    ImGui::SliderInt("Ignore Failed Pickup For (ms)", &settings.lootPickupIgnoreMs,
+        kMinLootPickupIgnoreMs, kMaxLootPickupIgnoreMs);
+    ImGui::SliderInt("Wait Before Picking New Drops (ms)", &settings.lootSpawnGraceMs,
+        kMinLootSpawnGraceMs, kMaxLootSpawnGraceMs);
+    ImGui::TextDisabled("Money is picked up even if it is not in the Loot list.");
+    ImGui::TextDisabled("Items in the Loot list always bypass value filters.");
+
+    ImGui::SeparatorText("Selected Loot Items");
+    RenderSelectedItemList("Loot Item List", "Clear Loot List", "##lootselected", settings.lootItemIds);
+    ImGui::SeparatorText("Item Browser");
+    RenderItemSelector(settings);
+}
+
+void BaseHuntPlugin::RenderTownRunsSection()
+{
+    AutoHuntSettings& settings = GetAutoHuntSettings();
+    ImGui::Checkbox("Auto Repair", &settings.autoRepair);
+    ImGui::SliderInt("Repair At Or Below %", &settings.repairPercent, 1, 100);
+    ImGui::Checkbox("Auto Store", &settings.autoStore);
+    ImGui::SliderInt("Go To Town When Bag Has", &settings.bagStoreThreshold, 1, CHero::MAX_BAG_ITEMS);
+    ImGui::Checkbox("Return to Town Immediately for Priority Items", &settings.immediateReturnOnPriorityItems);
+    ImGui::Checkbox("Pack Meteors into Meteor Scrolls", &settings.packMeteorsIntoScrolls);
+
+    ImGui::SeparatorText("Arrow Restock");
+    ImGui::Checkbox("Buy Arrows", &settings.buyArrows);
+    if (settings.buyArrows)
+        ImGui::SliderInt("Keep This Many Arrow Packs", &settings.arrowBuyCount, 1, 10);
+
+    ImGui::SeparatorText("Keep Lists");
+    RenderSelectedItemList("Warehouse Item List", "Clear Warehouse List", "##warehouseselected", settings.warehouseItemIds);
+    RenderSelectedItemList("Priority Return Item List", "Clear Priority List", "##priorityselected", settings.priorityReturnItemIds);
+}
+
+void BaseHuntPlugin::RenderSafetySection()
+{
+    AutoHuntSettings& settings = GetAutoHuntSettings();
+    ImGui::Checkbox("Auto Revive In Town", &settings.autoReviveInTown);
+    ImGui::SliderInt("Pause After Manual Map Click (ms)", &settings.manualControlPauseMs,
+        kMinManualControlPauseMs, kMaxManualControlPauseMs);
+
+    ImGui::SeparatorText("Player Safety");
+    ImGui::InputText("Whitelist", settings.playerWhitelist, IM_ARRAYSIZE(settings.playerWhitelist));
+    ImGui::Checkbox("Player Safety", &settings.safetyEnabled);
+    if (settings.safetyEnabled) {
+        ImGui::SliderInt("Detection Range", &settings.safetyPlayerRange, 0, 30);
+        ImGui::SliderInt("Detection Time (s)", &settings.safetyDetectionSec, 5, 300);
+        ImGui::SliderInt("Rest Time (s)", &settings.safetyRestSec, 10, 600);
+        ImGui::Checkbox("Discord Notify", &settings.safetyNotifyDiscord);
+    }
+}
+
+void BaseHuntPlugin::RenderAdvancedSection()
+{
+    AutoHuntSettings& settings = GetAutoHuntSettings();
+    ImGui::TextDisabled("Advanced: only change these if actions are too fast or too slow.");
+    ImGui::SliderInt("Movement Interval (ms)", &settings.movementIntervalMs, kMinMovementIntervalMs, kMaxMovementIntervalMs);
+    ImGui::SliderInt("Attack Interval (ms)", &settings.attackIntervalMs, kMinAttackIntervalMs, kMaxAttackIntervalMs);
+    ImGui::SliderInt("Cyclone Attack Interval (ms)", &settings.cycloneAttackIntervalMs, kMinAttackIntervalMs, kMaxAttackIntervalMs);
+    ImGui::SliderInt("Target Switch Delay (ms)", &settings.targetSwitchAttackIntervalMs,
+        kMinTargetSwitchAttackIntervalMs, kMaxTargetSwitchAttackIntervalMs);
+    ImGui::SliderInt("Item Action Interval (ms)", &settings.itemActionIntervalMs, kMinItemActionIntervalMs, kMaxItemActionIntervalMs);
+    ImGui::SliderInt("Self Cast Interval (ms)", &settings.selfCastIntervalMs, kMinSelfCastIntervalMs, kMaxSelfCastIntervalMs);
+    ImGui::SliderInt("Delay Between NPC Actions (ms)", &settings.npcActionIntervalMs, kMinNpcActionIntervalMs, kMaxNpcActionIntervalMs);
+    ImGui::SliderInt("Revive Delay (ms)", &settings.reviveDelayMs, kMinReviveDelayMs, kMaxReviveDelayMs);
+    ImGui::SliderInt("Revive Retry Interval (ms)", &settings.reviveRetryIntervalMs,
+        kMinReviveRetryIntervalMs, kMaxReviveRetryIntervalMs);
+}
+
+void BaseHuntPlugin::RenderDebugSection()
+{
+    AutoHuntSettings& settings = GetAutoHuntSettings();
+    ImGui::Text("Current State: %s", GetStateName());
+    ImGui::TextWrapped("Current Reason: %s", m_statusText);
+    ImGui::Text("Map / Position: %u @ (%d, %d)", m_lastMapId, m_lastHeroPos.x, m_lastHeroPos.y);
+    ImGui::Text("Last Target: %u", m_targetId);
+    ImGui::SeparatorText("Overlay Toggles");
+    ImGui::Checkbox("Show Action Radius", &settings.debugShowActionRadius);
+    ImGui::Checkbox("Show Clump Radius", &settings.debugShowClumpRadius);
+    ImGui::Checkbox("Show Mob Search Range", &settings.debugShowMobSearchRange);
+    ImGui::Checkbox("Show Loot Range", &settings.debugShowLootRange);
+    ImGui::Checkbox("Show Safety Range", &settings.debugShowSafetyRange);
+    ImGui::Checkbox("Show Attack Range", &settings.debugShowAttackRange);
+    ImGui::Checkbox("Show Archer Safety", &settings.debugShowArcherSafety);
+    ImGui::Checkbox("Show Scatter Range", &settings.debugShowScatterRange);
+    ImGui::Checkbox("Show Best Mob Clump", &settings.debugShowBestClump);
+}
+
+void BaseHuntPlugin::RenderDashboardUI()
+{
+    AutoHuntSettings& settings = GetAutoHuntSettings();
+    BaseHuntPlugin* modePlugin = GetSelectedModePlugin();
+    if (!modePlugin) {
+        ImGui::TextDisabled("No hunt modes are available.");
+        return;
+    }
+
+    settings.enabled = false;
+    for (const auto& plugin : PluginManager::Get().GetPlugins()) {
+        if (auto* hunt = dynamic_cast<BaseHuntPlugin*>(plugin.get()); hunt && hunt->m_enabled) {
+            settings.enabled = true;
+            settings.combatMode = hunt->GetExpectedCombatMode();
+            settings.archerMode = settings.combatMode == AutoHuntCombatMode::Archer;
+            modePlugin = hunt;
+            break;
+        }
+    }
+
+    ImGui::TextDisabled("Workflow view: start in Quick Setup, then tune Combat, Loot, and Town Runs.");
+    if (ImGui::BeginTabBar("##huntworkflowtabs")) {
+        if (ImGui::BeginTabItem("Quick Setup")) {
+            RenderQuickSetupSection(modePlugin);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Combat")) {
+            RenderCombatSection(modePlugin);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Loot")) {
+            RenderLootSection();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Town Runs")) {
+            RenderTownRunsSection();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Safety")) {
+            RenderSafetySection();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Advanced")) {
+            RenderAdvancedSection();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Debug")) {
+            RenderDebugSection();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+}
+
 void BaseHuntPlugin::RenderSharedUI()
 {
-    RenderGeneralUI();
-    RenderSettingsUI();
+    RenderDashboardUI();
 }
 
 void BaseHuntPlugin::RenderGeneralUI()
 {
+    RenderDashboardUI();
+    return;
+
     AutoHuntSettings& settings = GetAutoHuntSettings();
     constexpr ImGuiTreeNodeFlags kSectionFlags = ImGuiTreeNodeFlags_DefaultOpen;
 
@@ -1620,6 +2090,8 @@ void BaseHuntPlugin::RenderGeneralUI()
 
 void BaseHuntPlugin::RenderSettingsUI()
 {
+    return;
+
     AutoHuntSettings& settings = GetAutoHuntSettings();
     CHero* hero = Game::GetHero();
     CRoleMgr* mgr = Game::GetRoleMgr();
@@ -1936,6 +2408,14 @@ void BaseHuntPlugin::RenderSettingsUI()
 void BaseHuntPlugin::RenderUI()
 {
     AutoHuntSettings& settings = GetAutoHuntSettings();
+
+    bool enabled = GetAutoHuntSettings().enabled && GetAutoHuntSettings().combatMode == GetExpectedCombatMode();
+    if (ImGui::Checkbox("Enable This Mode", &enabled))
+        ApplyHuntModeSelection(GetExpectedCombatMode(), enabled);
+    ImGui::TextDisabled("Use the Hunting page for the full workflow layout.");
+    ImGui::Separator();
+    RenderCombatUI(settings);
+    return;
 
     // Mutual exclusion: enabling this plugin disables the other hunt plugin
     bool wasEnabled = m_enabled;
