@@ -41,10 +41,70 @@ cmake --build build --config Release
 ## Usage
 
 1. Build the solution (see above)
-2. Launch `injector.exe` — it will find or start the game process and inject the DLL, OR use a DLL injector and inject after logging in.
+2. Launch `injector.exe` — it will start a fresh game process and inject the DLL, OR use a DLL injector and inject after logging in.
 3. Press **Insert** to toggle the overlay
 
-The injector optionally supports a SOCKS5 relay setup and packet logging (see `injector/main.cpp` for details).
+### Injector Networking
+
+The injector can launch directly, route the game login connection through a SOCKS5 relay, or be used while a system VPN is already connected.
+
+#### Interactive SOCKS5 Prompt
+
+Running `injector.exe` with no proxy arguments shows a pre-launch SOCKS5 prompt:
+
+1. Choose whether to use SOCKS5.
+2. Enter proxy `host:port`.
+3. Choose whether username/password authentication is required.
+4. Enter the username and masked password if needed.
+5. Choose whether to enable packet logging.
+6. Choose whether to enable the kill-switch.
+
+If SOCKS5 is selected and setup is cancelled, invalid, or fails the pre-launch connection test, the injector aborts before launching the game.
+
+Saved SOCKS5 settings are stored next to `injector.exe` in `socks5_config.txt`. The saved fields are proxy host, port, auth flag, username, packet logging preference, and kill-switch preference. The SOCKS5 password is never saved.
+
+#### SOCKS5 Command Line
+
+```powershell
+injector.exe --proxy <host:port> [--proxy-user <user>] [--proxy-pass <pass>] [--relay-port <port>] [--target <host:port>] [--packet-log] [--no-kill-switch]
+injector.exe --no-prompt
+```
+
+| Option | Description |
+|--------|-------------|
+| `--proxy <host:port>` | SOCKS5 proxy server, for example `127.0.0.1:1080` |
+| `--proxy-user <user>` | SOCKS5 username |
+| `--proxy-pass <pass>` | SOCKS5 password |
+| `--relay-port <port>` | Local relay port; defaults to the target server port |
+| `--target <host:port>` | Override the upstream game server endpoint |
+| `--packet-log` | Enables relay packet logging to `relay_packets.log` |
+| `--no-kill-switch` | Disables process termination when a proxied connection fails |
+| `--no-prompt` | Skips the SOCKS5 prompt and launches without proxy unless `--proxy` is provided |
+
+SOCKS5 mode temporarily rewrites the game `servers.json` login target to `127.0.0.1:<relay-port>` while the launched game is running. The injector restores `servers.json` after launch and keeps the relay alive until the game exits.
+
+Before launching the game, SOCKS5 mode tests:
+
+```text
+local injector -> SOCKS5 proxy -> game login server
+```
+
+If the test fails, the game is not launched. For example, PIA SOCKS5 may authenticate successfully but return `host unreachable` for `login.conqueronline.net:9959`; that means PIA accepted the credentials but its SOCKS5 endpoint could not reach the game server/port.
+
+Packet logging is off by default because `relay_packets.log` can contain sensitive traffic. Enable it only while debugging.
+
+The kill-switch is on by default. If a SOCKS5 tunnel was established and then the proxied connection closes while the game process is still running, the injector terminates the game process instead of allowing continued play after a proxy failure.
+
+#### Using a VPN Instead of SOCKS5
+
+A full VPN such as PIA VPN is managed by Windows and the VPN client, not by the injector relay. To use a VPN:
+
+1. Connect the VPN first.
+2. Verify your public IP changed.
+3. Run `injector.exe`.
+4. Choose **No** in the SOCKS5 prompt, or run `injector.exe --no-prompt`.
+
+In VPN mode the game connects normally through the system network stack. The injector does not currently verify VPN state or force traffic through a specific VPN adapter.
 
 ### Overlay Tabs
 
